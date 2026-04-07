@@ -1,0 +1,48 @@
+[package]
+name = "sb-cli"
+version = "1.0.0"
+edition = "2021"
+description = "CLI tool for interacting with SilverBullet"
+license = "MIT"
+repository = "https://github.com/cam-barts/sb-cli"
+readme = "README.md"
+keywords = ["silverbullet", "cli", "sync", "notes", "markdown"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "sb"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "fs", "time"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+rusqlite = { version = "0.32", features = ["bundled"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+toml_edit = "0.22"
+keyring = { version = "3.6", features = ["apple-native", "windows-native", "sync-secret-service", "crypto-rust"] }
+thiserror = "2.0"
+jiff = "0.2"
+blake3 = "1.8"
+globset = "0.4"
+walkdir = "2.5"
+indicatif = "0.17"
+console = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+bytes = "1.11.1"
+percent-encoding = "2.3"
+
+[dev-dependencies]
+wiremock = "0.6"
+assert_cmd = "2.0"
+predicates = "3.1"
+tempfile = "3.15"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+opt-level = "z"
