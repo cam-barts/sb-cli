@@ -25,7 +25,7 @@ impl SyncContext {
     /// Build a full context including an HTTP client.
     fn new(cli_token: Option<&str>) -> SbResult<Self> {
         let space_root = find_space_root()?;
-        let config = ResolvedConfig::load()?;
+        let config = ResolvedConfig::load_from(&space_root)?;
         let client = build_client(cli_token)?;
         let sb_dir = space_root.join(".sb");
         let db_path = sb_dir.join("state.db");
@@ -57,7 +57,7 @@ impl SyncContext {
     /// Build a context without an HTTP client (for commands that only read local state).
     fn new_no_client() -> SbResult<Self> {
         let space_root = find_space_root()?;
-        let config = ResolvedConfig::load()?;
+        let config = ResolvedConfig::load_from(&space_root)?;
         let sb_dir = space_root.join(".sb");
         let db_path = sb_dir.join("state.db");
         let content_dir = space_root.join(&config.sync_dir.value);
@@ -538,7 +538,7 @@ pub async fn execute_resolve(
     let _ = format; // format not used for resolve output (messages go to stderr)
 
     let space_root = find_space_root()?;
-    let config = ResolvedConfig::load()?;
+    let config = ResolvedConfig::load_from(&space_root)?;
     let sb_dir = space_root.join(".sb");
     let db_path = sb_dir.join("state.db");
     let content_dir = space_root.join(&config.sync_dir.value);

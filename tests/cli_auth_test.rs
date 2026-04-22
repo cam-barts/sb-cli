@@ -69,11 +69,14 @@ async fn auth_set_piped_stdin() {
 #[tokio::test]
 async fn auth_set_uninitialized_fails() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
+    let xdg_dir = tempfile::TempDir::new().expect("create xdg tempdir");
 
     Command::cargo_bin("sb")
         .unwrap()
         .args(["auth", "set", "--token", "t"])
         .current_dir(temp_dir.path())
+        .env("XDG_CONFIG_HOME", xdg_dir.path())
+        .env_remove("SB_SPACE")
         .assert()
         .failure()
         .code(1)

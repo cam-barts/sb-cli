@@ -71,11 +71,14 @@ fn config_show_env_override() {
 #[test]
 fn config_show_defaults_when_no_config() {
     let dir = tempfile::tempdir().expect("create tempdir");
+    let xdg_dir = tempfile::tempdir().expect("create xdg tempdir");
 
     Command::cargo_bin("sb")
         .unwrap()
         .args(["config", "show"])
         .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", xdg_dir.path())
+        .env_remove("SB_SPACE")
         .assert()
         .success()
         .stdout(

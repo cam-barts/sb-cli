@@ -44,11 +44,14 @@ async fn server_ping_reports_reachability() {
 #[tokio::test]
 async fn server_ping_uninitialized_fails() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
+    let xdg_dir = tempfile::TempDir::new().expect("create xdg tempdir");
 
     Command::cargo_bin("sb")
         .unwrap()
         .args(["server", "ping"])
         .current_dir(temp_dir.path())
+        .env("XDG_CONFIG_HOME", xdg_dir.path())
+        .env_remove("SB_SPACE")
         .assert()
         .failure()
         .code(1)

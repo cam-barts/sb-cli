@@ -64,6 +64,10 @@ pub enum SbError {
     #[error("not initialized: no .sb/ directory found")]
     NotInitialized,
 
+    /// Space path is configured (via env or XDG config) but no `.sb/` exists there
+    #[error("space not found at {configured_path} (configured via {via})")]
+    SpaceNotFound { configured_path: String, via: String },
+
     /// No auth token found from any source
     #[error("no auth token found")]
     TokenNotFound { checked: Vec<String> },
@@ -108,7 +112,12 @@ impl SbError {
             SbError::HttpStatus { status, .. } if *status == 404 => {
                 Some("The requested resource was not found on the server".to_string())
             }
-            SbError::NotInitialized => Some("Run `sb init <server-url>` to initialize".to_string()),
+            SbError::NotInitialized => Some(
+                "Run `sb init <server-url>` to initialize, or set `space = \"...\"` in ~/.config/sb/config.toml".to_string()
+            ),
+            SbError::SpaceNotFound { configured_path, via } => Some(format!(
+                "Check that {configured_path} exists and contains a .sb/ directory, or update the path in {via}"
+            )),
             SbError::TokenNotFound { checked } => Some(format!("Checked: {}", checked.join(", "))),
             SbError::PageNotFound { .. } => {
                 Some("Run `sb page list` to see available pages".to_string())

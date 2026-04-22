@@ -188,11 +188,14 @@ fn page_list_sort_name_orders_alphabetically() {
 #[test]
 fn page_list_in_non_initialized_directory_returns_error() {
     let dir = tempfile::tempdir().expect("create tempdir");
-    // No .sb/ directory — not initialized
+    let xdg_dir = tempfile::tempdir().expect("create xdg tempdir");
+    // Isolate from any real XDG config or SB_SPACE on the developer's machine
 
     Command::cargo_bin("sb")
         .expect("sb binary")
         .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", xdg_dir.path())
+        .env_remove("SB_SPACE")
         .args(["page", "list"])
         .assert()
         .failure()

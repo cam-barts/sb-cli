@@ -89,7 +89,7 @@ pub async fn execute(
     color: bool,
 ) -> SbResult<()> {
     let space_root = find_space_root()?;
-    let config = ResolvedConfig::load()?;
+    let config = ResolvedConfig::load_from(&space_root)?;
 
     // Resolve date: --yesterday = offset -1, --offset N, default = 0 (today)
     let date_offset = if yesterday { -1 } else { offset.unwrap_or(0) };

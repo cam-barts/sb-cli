@@ -418,6 +418,99 @@ pub fn update_config_value(
     Ok(())
 }
 
+/// Return the XDG config directory for sb: `$XDG_CONFIG_HOME/sb` or `~/.config/sb`.
+pub fn xdg_config_dir() -> SbResult<PathBuf> {
+    let base = if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        PathBuf::from(xdg)
+    } else {
+        let home = std::env::var("HOME").map_err(|_| SbError::Config {
+            message: "cannot determine home directory: $HOME is not set".to_string(),
+        })?;
+        PathBuf::from(home).join(".config")
+    };
+    Ok(base.join("sb"))
+}
+
+/// Expand a leading `~/` or bare `~` against `$HOME`.
+/// Absolute paths are returned as-is.
+/// Other relative paths return `SbError::Config`.
+pub fn expand_tilde(path: &str) -> SbResult<PathBuf> {
+    if path == "~" {
+        let home = std::env::var("HOME").map_err(|_| SbError::Config {
+            message: "cannot expand ~: $HOME is not set".to_string(),
+        })?;
+        return Ok(PathBuf::from(home));
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        let home = std::env::var("HOME").map_err(|_| SbError::Config {
+            message: "cannot expand ~: $HOME is not set".to_string(),
+        })?;
+        return Ok(PathBuf::from(home).join(rest));
+    }
+    let p = PathBuf::from(path);
+    if p.is_absolute() {
+        return Ok(p);
+    }
+    Err(SbError::Config {
+        message: format!(
+            "space path must be absolute or start with ~/: got \"{}\"",
+            path
+        ),
+    })
+}
+
+/// Raw structure for the user-level XDG config at `~/.config/sb/config.toml`.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct UserConfig {
+    pub space: Option<String>,
+}
+
+/// Load the user-level XDG config. Returns defaults if the file does not exist.
+pub fn load_user_config() -> SbResult<UserConfig> {
+    let config_path = xdg_config_dir()?.join("config.toml");
+    if !config_path.is_file() {
+        return Ok(UserConfig::default());
+    }
+    let content = std::fs::read_to_string(&config_path).map_err(|e| SbError::Config {
+        message: format!("cannot read {}: {e}", config_path.display()),
+    })?;
+    toml::from_str::<UserConfig>(&content).map_err(|e| SbError::Config {
+        message: format!("invalid XDG config at {}: {e}", config_path.display()),
+    })
+}
+
+/// Write the `space` key in `$XDG_CONFIG_HOME/sb/config.toml`.
+/// Creates the directory and file if they do not exist.
+/// Preserves all other keys via toml_edit.
+pub fn write_user_config_space(space_path: &Path) -> SbResult<()> {
+    let dir = xdg_config_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| SbError::Filesystem {
+        message: "failed to create XDG config directory".into(),
+        path: dir.display().to_string(),
+        source: Some(e),
+    })?;
+    let config_path = dir.join("config.toml");
+    let content = if config_path.is_file() {
+        std::fs::read_to_string(&config_path).map_err(|e| SbError::Filesystem {
+            message: format!("cannot read {}", config_path.display()),
+            path: config_path.display().to_string(),
+            source: Some(e),
+        })?
+    } else {
+        String::new()
+    };
+    let mut doc = toml_edit::DocumentMut::from_str(&content).map_err(|e| SbError::Config {
+        message: format!("cannot parse XDG config.toml: {e}"),
+    })?;
+    doc["space"] = toml_edit::value(space_path.display().to_string());
+    std::fs::write(&config_path, doc.to_string()).map_err(|e| SbError::Filesystem {
+        message: "failed to write XDG config file".into(),
+        path: config_path.display().to_string(),
+        source: Some(e),
+    })?;
+    Ok(())
+}
+
 /// Write an initial `.sb/config.toml` file with the given server URL and optional token.
 ///
 /// - URL trailing slash is stripped before storing (token only written when explicitly
@@ -1088,5 +1181,113 @@ keychain = true
         let result = resolve_token(None, &config);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "file-token");
+    }
+
+    // --- expand_tilde tests ---
+
+    #[test]
+    fn expand_tilde_absolute_path_is_unchanged() {
+        let result = expand_tilde("/tmp/notes").expect("expand absolute");
+        assert_eq!(result, PathBuf::from("/tmp/notes"));
+    }
+
+    #[test]
+    fn expand_tilde_bare_tilde_expands_to_home() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("HOME", "/home/testuser");
+        let result = expand_tilde("~").expect("expand ~");
+        std::env::remove_var("HOME");
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+    }
+
+    #[test]
+    fn expand_tilde_tilde_slash_expands_to_home_subdir() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("HOME", "/home/testuser");
+        let result = expand_tilde("~/notes").expect("expand ~/notes");
+        std::env::remove_var("HOME");
+        assert_eq!(result, PathBuf::from("/home/testuser/notes"));
+    }
+
+    #[test]
+    fn expand_tilde_relative_path_returns_error() {
+        let result = expand_tilde("relative/path");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            SbError::Config { message } => {
+                assert!(message.contains("absolute or start with ~/"), "got: {message}");
+            }
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
+
+    // --- xdg_config_dir tests ---
+
+    #[test]
+    fn xdg_config_dir_uses_xdg_config_home_when_set() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::set_var("XDG_CONFIG_HOME", "/custom/config");
+        let result = xdg_config_dir().expect("xdg_config_dir");
+        std::env::remove_var("XDG_CONFIG_HOME");
+        assert_eq!(result, PathBuf::from("/custom/config/sb"));
+    }
+
+    #[test]
+    fn xdg_config_dir_defaults_to_home_dot_config_sb() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", "/home/testuser");
+        let result = xdg_config_dir().expect("xdg_config_dir");
+        std::env::remove_var("HOME");
+        assert_eq!(result, PathBuf::from("/home/testuser/.config/sb"));
+    }
+
+    // --- load_user_config / write_user_config_space round-trip ---
+
+    #[test]
+    fn user_config_roundtrip_write_then_load() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let xdg_dir = tempfile::tempdir().expect("create tempdir");
+        std::env::set_var("XDG_CONFIG_HOME", xdg_dir.path());
+
+        let space_path = PathBuf::from("/tmp/my-space");
+        write_user_config_space(&space_path).expect("write user config");
+
+        let loaded = load_user_config().expect("load user config");
+        assert_eq!(loaded.space.as_deref(), Some("/tmp/my-space"));
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn load_user_config_returns_defaults_when_no_file() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let xdg_dir = tempfile::tempdir().expect("create tempdir");
+        std::env::set_var("XDG_CONFIG_HOME", xdg_dir.path());
+
+        let loaded = load_user_config().expect("load user config");
+        assert!(loaded.space.is_none());
+
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn write_user_config_space_preserves_existing_keys() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let xdg_dir = tempfile::tempdir().expect("create tempdir");
+        std::env::set_var("XDG_CONFIG_HOME", xdg_dir.path());
+
+        // Write an existing XDG config with an unrelated key
+        let config_file = xdg_dir.path().join("sb").join("config.toml");
+        std::fs::create_dir_all(config_file.parent().unwrap()).expect("create dir");
+        std::fs::write(&config_file, "other_key = \"value\"\n").expect("write initial");
+
+        write_user_config_space(Path::new("/tmp/space")).expect("write user config");
+
+        let content = std::fs::read_to_string(&config_file).expect("read config");
+        assert!(content.contains("other_key"), "should preserve other_key");
+        assert!(content.contains("/tmp/space"), "should contain space path");
+
+        std::env::remove_var("XDG_CONFIG_HOME");
     }
 }

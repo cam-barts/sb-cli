@@ -42,6 +42,12 @@ async fn main() {
                 ConfigCommands::Show { reveal } => {
                     commands::config::execute_show(reveal, &cli.format, cli.quiet)
                 }
+                ConfigCommands::SetSpace { path } => {
+                    commands::config::execute_set_space(&path, cli.quiet, output_config.color)
+                }
+                ConfigCommands::GetSpace => {
+                    commands::config::execute_get_space(&cli.format, cli.quiet)
+                }
             }
         }
         Some(Commands::Init { server_url }) => {

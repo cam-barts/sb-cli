@@ -151,6 +151,13 @@ pub enum ConfigCommands {
         #[arg(long)]
         reveal: bool,
     },
+    /// Set the default space path in XDG config (~/.config/sb/config.toml)
+    SetSpace {
+        /// Space path (absolute or ~/relative)
+        path: String,
+    },
+    /// Show the currently resolved space root and its source
+    GetSpace,
 }
 
 #[derive(Subcommand)]

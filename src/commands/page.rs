@@ -44,14 +44,45 @@ pub fn validate_page_path(space_root: &Path, name: &str) -> SbResult<PathBuf> {
     Ok(resolve_page_path(space_root, name))
 }
 
-/// Find the space root directory by locating `.sb/config.toml`.
-///
-/// The space root is the parent of the `.sb/` directory.
+/// Find the space root using a layered resolver:
+/// 1. `SB_SPACE` env var (absolute or `~/`-relative)
+/// 2. Walk up from cwd looking for `.sb/config.toml`
+/// 3. `space` field in `$XDG_CONFIG_HOME/sb/config.toml`
 pub fn find_space_root() -> SbResult<PathBuf> {
+    // 1. SB_SPACE env override
+    if let Ok(val) = std::env::var("SB_SPACE") {
+        let expanded = crate::config::expand_tilde(&val)?;
+        if !expanded.join(".sb").join("config.toml").is_file() {
+            return Err(SbError::SpaceNotFound {
+                configured_path: expanded.display().to_string(),
+                via: "SB_SPACE environment variable".to_string(),
+            });
+        }
+        return Ok(expanded);
+    }
+    // 2. Walk up from cwd
     let cwd = std::env::current_dir().map_err(|e| SbError::Config {
         message: format!("cannot determine current directory: {e}"),
     })?;
-    find_space_root_from(&cwd)
+    if let Ok(root) = find_space_root_from(&cwd) {
+        return Ok(root);
+    }
+    // 3. XDG config
+    let user_config = crate::config::load_user_config()?;
+    if let Some(ref path_str) = user_config.space {
+        let expanded = crate::config::expand_tilde(path_str)?;
+        if !expanded.join(".sb").join("config.toml").is_file() {
+            let xdg_path = crate::config::xdg_config_dir()
+                .map(|d| d.join("config.toml").display().to_string())
+                .unwrap_or_else(|_| "~/.config/sb/config.toml".to_string());
+            return Err(SbError::SpaceNotFound {
+                configured_path: expanded.display().to_string(),
+                via: xdg_path,
+            });
+        }
+        return Ok(expanded);
+    }
+    Err(SbError::NotInitialized)
 }
 
 /// Find space root starting from a specific directory (testable variant).

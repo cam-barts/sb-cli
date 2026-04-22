@@ -64,6 +64,36 @@ async fn init_inner(
     // Write config.toml — only persist token if it came from --token CLI flag
     config::write_config_file(sb_dir, server_url, token.as_deref())?;
 
+    // Register this space in the XDG user config so `sb` works from anywhere.
+    // If the XDG config already points at a different path, leave it unchanged and notify.
+    match config::load_user_config() {
+        Ok(user_cfg) => {
+            let existing_points_here = user_cfg.space.as_deref().map_or(false, |s| {
+                config::expand_tilde(s)
+                    .map(|p| p == space_dir)
+                    .unwrap_or(false)
+            });
+            if user_cfg.space.is_none() || existing_points_here {
+                if let Err(e) = config::write_user_config_space(space_dir) {
+                    warn!("could not update XDG config: {e}");
+                }
+            } else if let Some(ref existing) = user_cfg.space {
+                output::print_warning(
+                    &format!(
+                        "XDG config already points at {existing}; not changed. \
+                         Run `sb config set-space {}` to switch.",
+                        space_dir.display()
+                    ),
+                    color,
+                    quiet,
+                );
+            }
+        }
+        Err(e) => {
+            warn!("could not read XDG config: {e}");
+        }
+    }
+
     // Create state.db with WAL mode
     let db_path = sb_dir.join("state.db");
     let db_path_str = db_path.display().to_string();

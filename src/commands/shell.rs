@@ -1,4 +1,4 @@
-use crate::commands::server::{build_client, require_initialized};
+use crate::commands::server::build_client;
 use crate::config::ResolvedConfig;
 use crate::error::{SbError, SbResult};
 
@@ -21,8 +21,8 @@ pub async fn execute(
     _quiet: bool,
     _color: bool,
 ) -> SbResult<()> {
-    require_initialized()?;
-    let config = ResolvedConfig::load()?;
+    let space_root = crate::commands::page::find_space_root()?;
+    let config = ResolvedConfig::load_from(&space_root)?;
 
     // Check shell.enabled gate
     if !config.shell_enabled.value {

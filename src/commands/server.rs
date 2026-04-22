@@ -6,7 +6,8 @@ use crate::output;
 /// Builds an authenticated SbClient from CLI token override or resolved config.
 /// Used as a shared helper across command modules.
 pub(crate) fn build_client(cli_token: Option<&str>) -> SbResult<SbClient> {
-    let config = ResolvedConfig::load()?;
+    let space_root = crate::commands::page::find_space_root()?;
+    let config = ResolvedConfig::load_from(&space_root)?;
     let server_url = config
         .server_url
         .value
@@ -27,16 +28,10 @@ pub(crate) fn runtime_unavailable_error() -> SbError {
     }
 }
 
-/// Returns an error if the current directory is not inside an initialized sb space.
+/// Returns an error if no initialized sb space can be resolved.
 /// Used as a shared helper across command modules.
 pub(crate) fn require_initialized() -> SbResult<()> {
-    let cwd = std::env::current_dir().map_err(|e| SbError::Config {
-        message: format!("cannot get current directory: {e}"),
-    })?;
-    if config::find_config_file(&cwd).is_none() {
-        return Err(SbError::NotInitialized);
-    }
-    Ok(())
+    crate::commands::page::find_space_root().map(|_| ())
 }
 
 /// Execute `sb server ping` — check connectivity and report response time.
@@ -52,14 +47,9 @@ pub async fn execute_ping(
     let ms = elapsed.as_millis();
 
     // Detect Runtime API availability during ping
-    let rt_available = if let Some(config_path) =
-        config::find_config_file(&std::env::current_dir().unwrap_or_default())
-    {
-        if let Some(sb_dir) = config_path.parent() {
-            crate::runtime::detect_runtime_api(&client, sb_dir).await
-        } else {
-            false
-        }
+    let rt_available = if let Ok(space_root) = crate::commands::page::find_space_root() {
+        let sb_dir = space_root.join(".sb");
+        crate::runtime::detect_runtime_api(&client, &sb_dir).await
     } else {
         false
     };

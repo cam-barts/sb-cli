@@ -1,6 +1,7 @@
 use crate::cli::OutputFormat;
 use crate::config::{mask_token, ConfigSource, ResolvedConfig, ResolvedValue};
-use crate::error::SbResult;
+use crate::error::{SbError, SbResult};
+use crate::output;
 use tracing::debug;
 
 /// Execute `sb config show` — display resolved configuration with source annotations.
@@ -11,7 +12,10 @@ pub fn execute_show(reveal: bool, format: &OutputFormat, quiet: bool) -> SbResul
         return Ok(());
     }
 
-    let config = ResolvedConfig::load()?;
+    let config = match crate::commands::page::find_space_root() {
+        Ok(space_root) => ResolvedConfig::load_from(&space_root)?,
+        Err(_) => ResolvedConfig::load()?,
+    };
     debug!("config loaded successfully");
 
     match format {
@@ -20,6 +24,72 @@ pub fn execute_show(reveal: bool, format: &OutputFormat, quiet: bool) -> SbResul
     }
 
     Ok(())
+}
+
+/// Execute `sb config set-space <path>` — write the default space to XDG config.
+pub fn execute_set_space(path: &str, quiet: bool, color: bool) -> SbResult<()> {
+    let expanded = crate::config::expand_tilde(path)?;
+    if !expanded.join(".sb").join("config.toml").is_file() {
+        return Err(SbError::Usage(format!(
+            "no .sb/ directory found at {}; run `sb init <url>` there first",
+            expanded.display()
+        )));
+    }
+    crate::config::write_user_config_space(&expanded)?;
+    output::print_success(
+        &format!("Space set to {}", expanded.display()),
+        color,
+        quiet,
+    );
+    Ok(())
+}
+
+/// Execute `sb config get-space` — show the resolved space root and where it came from.
+pub fn execute_get_space(format: &OutputFormat, quiet: bool) -> SbResult<()> {
+    if quiet {
+        return Ok(());
+    }
+
+    // 1. SB_SPACE env
+    if let Ok(val) = std::env::var("SB_SPACE") {
+        let expanded = crate::config::expand_tilde(&val)?;
+        print_space_result(format, &expanded.display().to_string(), "env: SB_SPACE");
+        return Ok(());
+    }
+
+    // 2. cwd walk-up
+    let cwd = std::env::current_dir().map_err(|e| SbError::Config {
+        message: format!("cannot determine current directory: {e}"),
+    })?;
+    if let Ok(root) = crate::commands::page::find_space_root_from(&cwd) {
+        print_space_result(format, &root.display().to_string(), "cwd (walk-up)");
+        return Ok(());
+    }
+
+    // 3. XDG config
+    let user_config = crate::config::load_user_config()?;
+    if let Some(ref path_str) = user_config.space {
+        let expanded = crate::config::expand_tilde(path_str)?;
+        let xdg_path = crate::config::xdg_config_dir()
+            .map(|d| d.join("config.toml").display().to_string())
+            .unwrap_or_else(|_| "~/.config/sb/config.toml".to_string());
+        print_space_result(format, &expanded.display().to_string(), &format!("XDG config ({xdg_path})"));
+        return Ok(());
+    }
+
+    // 4. Not configured
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::json!({"space": null, "source": "not configured"})),
+        OutputFormat::Human => println!("(not configured)"),
+    }
+    Ok(())
+}
+
+fn print_space_result(format: &OutputFormat, space: &str, source: &str) {
+    match format {
+        OutputFormat::Json => println!("{}", serde_json::json!({"space": space, "source": source})),
+        OutputFormat::Human => println!("{space}  # ({source})"),
+    }
 }
 
 fn source_annotation(source: &ConfigSource) -> String {
