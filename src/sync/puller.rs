@@ -1215,7 +1215,7 @@ mod tests {
             .await;
         for page in &["page1.md", "page2.md", "page3.md"] {
             Mock::given(method("GET"))
-                .and(wm_path(&format!("/.fs/{page}")))
+                .and(wm_path(format!("/.fs/{page}")))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_string(format!("content of {page}")),
                 )

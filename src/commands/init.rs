@@ -68,7 +68,7 @@ async fn init_inner(
     // If the XDG config already points at a different path, leave it unchanged and notify.
     match config::load_user_config() {
         Ok(user_cfg) => {
-            let existing_points_here = user_cfg.space.as_deref().map_or(false, |s| {
+            let existing_points_here = user_cfg.space.as_deref().is_some_and(|s| {
                 config::expand_tilde(s)
                     .map(|p| p == space_dir)
                     .unwrap_or(false)
@@ -199,8 +199,6 @@ async fn init_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-
     fn setup_sb_dir() -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("create tempdir");
         let sb_dir = dir.path().join(".sb");
@@ -221,11 +219,10 @@ mod tests {
         // .sb/ already exists in dir; test the check logic directly
         let sb_dir = dir.path().join(".sb");
         assert!(sb_dir.exists());
-        let result: SbResult<()> = Err(SbError::AlreadyInitialized {
+        let err = SbError::AlreadyInitialized {
             path: sb_dir.display().to_string(),
-        });
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        };
+        match err {
             SbError::AlreadyInitialized { path } => {
                 assert!(path.contains(".sb"));
             }

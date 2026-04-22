@@ -73,13 +73,20 @@ pub fn execute_get_space(format: &OutputFormat, quiet: bool) -> SbResult<()> {
         let xdg_path = crate::config::xdg_config_dir()
             .map(|d| d.join("config.toml").display().to_string())
             .unwrap_or_else(|_| "~/.config/sb/config.toml".to_string());
-        print_space_result(format, &expanded.display().to_string(), &format!("XDG config ({xdg_path})"));
+        print_space_result(
+            format,
+            &expanded.display().to_string(),
+            &format!("XDG config ({xdg_path})"),
+        );
         return Ok(());
     }
 
     // 4. Not configured
     match format {
-        OutputFormat::Json => println!("{}", serde_json::json!({"space": null, "source": "not configured"})),
+        OutputFormat::Json => println!(
+            "{}",
+            serde_json::json!({"space": null, "source": "not configured"})
+        ),
         OutputFormat::Human => println!("(not configured)"),
     }
     Ok(())

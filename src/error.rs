@@ -66,7 +66,10 @@ pub enum SbError {
 
     /// Space path is configured (via env or XDG config) but no `.sb/` exists there
     #[error("space not found at {configured_path} (configured via {via})")]
-    SpaceNotFound { configured_path: String, via: String },
+    SpaceNotFound {
+        configured_path: String,
+        via: String,
+    },
 
     /// No auth token found from any source
     #[error("no auth token found")]

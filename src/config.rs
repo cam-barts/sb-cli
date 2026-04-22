@@ -1215,7 +1215,10 @@ keychain = true
         assert!(result.is_err());
         match result.unwrap_err() {
             SbError::Config { message } => {
-                assert!(message.contains("absolute or start with ~/"), "got: {message}");
+                assert!(
+                    message.contains("absolute or start with ~/"),
+                    "got: {message}"
+                );
             }
             other => panic!("expected Config error, got: {other:?}"),
         }

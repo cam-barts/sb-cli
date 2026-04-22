@@ -594,7 +594,7 @@ mod tests {
         // Write a local file with content different from the stored hash
         let file_path = dir.path().join("page.md");
         fs::write(&file_path, b"modified content").expect("write file");
-        let modified_hash = crate::sync::scanner::hash_file(&file_path).expect("hash");
+        let _modified_hash = crate::sync::scanner::hash_file(&file_path).expect("hash");
 
         let original_hash = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233";
 
@@ -1009,12 +1009,12 @@ mod tests {
         let server = MockServer::start().await;
         for i in 1..=3 {
             Mock::given(method("PUT"))
-                .and(wm_path(&format!("/.fs/page{i}.md")))
+                .and(wm_path(format!("/.fs/page{i}.md")))
                 .respond_with(ResponseTemplate::new(200))
                 .mount(&server)
                 .await;
             Mock::given(method("GET"))
-                .and(wm_path(&format!("/.fs/page{i}.md")))
+                .and(wm_path(format!("/.fs/page{i}.md")))
                 .and(wm_header("X-Get-Meta", "true"))
                 .respond_with(
                     ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000001000"),
