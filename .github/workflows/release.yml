@@ -91,17 +91,28 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - uses: actions/download-artifact@v4
         with:
           merge-multiple: true
+          path: artifacts
 
       - name: Generate checksums
-        run: sha256sum sb-* > sha256sums.txt
+        run: sha256sum artifacts/sb-* > artifacts/sha256sums.txt
+
+      - name: Extract changelog for this version
+        id: changelog
+        run: |
+          tag="${{ github.ref_name }}"
+          version="${tag#v}"
+          body=$(awk "/^## v${version}/{found=1; next} found && /^## /{exit} found{print}" CHANGELOG.md)
+          printf 'body<<EOF\n%s\nEOF\n' "$body" >> "$GITHUB_OUTPUT"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
+          body: ${{ steps.changelog.outputs.body }}
           files: |
-            sb-*
-            sha256sums.txt
+            artifacts/sb-*
+            artifacts/sha256sums.txt
