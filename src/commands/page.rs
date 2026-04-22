@@ -219,7 +219,7 @@ pub async fn execute_list(
             entries.sort_by(|a, b| a.name.cmp(&b.name));
         }
         SortField::Modified => {
-            entries.sort_by(|a, b| b.modified_time.cmp(&a.modified_time));
+            entries.sort_by_key(|b| std::cmp::Reverse(b.modified_time));
         }
         SortField::Created => {
             if entries.iter().any(|e| e.created_time.is_none()) {
