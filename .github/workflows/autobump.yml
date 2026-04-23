@@ -1,0 +1,54 @@
+name: Auto Bump
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  bump:
+    name: Bump version
+    runs-on: ubuntu-latest
+    # Skip the bump commit itself to avoid an infinite loop
+    if: "!startsWith(github.event.head_commit.message, 'bump:')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Install commitizen
+        run: pip install commitizen
+
+      - name: Bump version
+        id: bump
+        run: |
+          if cz bump --yes; then
+            version=$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')
+            echo "bumped=true" >> "$GITHUB_OUTPUT"
+            echo "tag=v${version}" >> "$GITHUB_OUTPUT"
+          else
+            code=$?
+            if [ $code -eq 21 ]; then
+              echo "bumped=false" >> "$GITHUB_OUTPUT"
+            else
+              exit $code
+            fi
+          fi
+
+      - name: Push commit and tag
+        if: steps.bump.outputs.bumped == 'true'
+        run: git push origin main --follow-tags
+
+      - name: Trigger release workflow
+        if: steps.bump.outputs.bumped == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run release.yml --ref "${{ steps.bump.outputs.tag }}"
