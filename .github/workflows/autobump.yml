@@ -45,7 +45,9 @@ jobs:
 
       - name: Push commit and tag
         if: steps.bump.outputs.bumped == 'true'
-        run: git push origin main --follow-tags
+        run: |
+          git push origin main
+          git push origin "${{ steps.bump.outputs.tag }}"
 
       - name: Trigger release workflow
         if: steps.bump.outputs.bumped == 'true'
