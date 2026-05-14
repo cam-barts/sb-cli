@@ -18,6 +18,10 @@ async fn main() {
     // Build output configuration from CLI flags + env
     let output_config = OutputConfig::new(cli.quiet, cli.verbose, cli.no_color);
 
+    // Resolve --format once: explicit user value wins, otherwise auto-detect
+    // (Human when stdout is a TTY, Json when piped).
+    let format = output::resolve_format(cli.format.clone());
+
     // Apply color settings globally via console crate
     if !output_config.color {
         console::set_colors_enabled(false);
@@ -40,14 +44,12 @@ async fn main() {
             debug!("dispatching: config");
             match command {
                 ConfigCommands::Show { reveal } => {
-                    commands::config::execute_show(reveal, &cli.format, cli.quiet)
+                    commands::config::execute_show(reveal, &format, cli.quiet)
                 }
                 ConfigCommands::SetSpace { path } => {
                     commands::config::execute_set_space(&path, cli.quiet, output_config.color)
                 }
-                ConfigCommands::GetSpace => {
-                    commands::config::execute_get_space(&cli.format, cli.quiet)
-                }
+                ConfigCommands::GetSpace => commands::config::execute_get_space(&format, cli.quiet),
             }
         }
         Some(Commands::Init { server_url }) => {
@@ -66,7 +68,7 @@ async fn main() {
                 ServerCommands::Ping => {
                     commands::server::execute_ping(
                         cli.token.as_deref(),
-                        &cli.format,
+                        &format,
                         cli.quiet,
                         output_config.color,
                     )
@@ -75,7 +77,7 @@ async fn main() {
                 ServerCommands::Config => {
                     commands::server::execute_config(
                         cli.token.as_deref(),
-                        &cli.format,
+                        &format,
                         cli.quiet,
                         output_config.color,
                     )
@@ -98,7 +100,7 @@ async fn main() {
                     commands::page::execute_list(
                         &sort,
                         limit,
-                        &cli.format,
+                        &format,
                         cli.quiet,
                         output_config.color,
                     )
@@ -109,7 +111,7 @@ async fn main() {
                         cli.token.as_deref(),
                         &name,
                         remote,
-                        &cli.format,
+                        &format,
                         cli.quiet,
                         output_config.color,
                     )
@@ -127,7 +129,7 @@ async fn main() {
                         content.as_deref(),
                         edit,
                         template.as_deref(),
-                        &cli.format,
+                        &format,
                         cli.quiet,
                         output_config.color,
                     )
@@ -161,7 +163,7 @@ async fn main() {
                 append.as_deref(),
                 yesterday,
                 offset,
-                &cli.format,
+                &format,
                 cli.quiet,
                 output_config.color,
             )
@@ -176,7 +178,7 @@ async fn main() {
                     commands::sync::execute_pull(
                         cli.token.as_deref(),
                         cli.quiet,
-                        &cli.format,
+                        &format,
                         dry_run || sub_dry_run,
                     )
                     .await
@@ -187,15 +189,13 @@ async fn main() {
                     commands::sync::execute_push(
                         cli.token.as_deref(),
                         cli.quiet,
-                        &cli.format,
+                        &format,
                         dry_run || sub_dry_run,
                     )
                     .await
                 }
-                Some(SyncCommands::Status) => commands::sync::execute_status(&cli.format).await,
-                Some(SyncCommands::Conflicts) => {
-                    commands::sync::execute_conflicts(&cli.format).await
-                }
+                Some(SyncCommands::Status) => commands::sync::execute_status(&format).await,
+                Some(SyncCommands::Conflicts) => commands::sync::execute_conflicts(&format).await,
                 Some(SyncCommands::Resolve {
                     path,
                     keep_local,
@@ -211,7 +211,7 @@ async fn main() {
                         diff,
                         force,
                         cli.quiet,
-                        &cli.format,
+                        &format,
                     )
                     .await
                 }
@@ -220,12 +220,11 @@ async fn main() {
                         commands::sync::execute_sync_dry_run(
                             cli.token.as_deref(),
                             cli.quiet,
-                            &cli.format,
+                            &format,
                         )
                         .await
                     } else {
-                        commands::sync::execute_sync(cli.token.as_deref(), cli.quiet, &cli.format)
-                            .await
+                        commands::sync::execute_sync(cli.token.as_deref(), cli.quiet, &format).await
                     }
                 }
             }
@@ -235,7 +234,7 @@ async fn main() {
             commands::lua::execute(
                 cli.token.as_deref(),
                 &expression,
-                &cli.format,
+                &format,
                 cli.quiet,
                 output_config.color,
             )
@@ -246,7 +245,7 @@ async fn main() {
             commands::query::execute(
                 cli.token.as_deref(),
                 &query,
-                &cli.format,
+                &format,
                 cli.quiet,
                 output_config.color,
             )
@@ -257,6 +256,46 @@ async fn main() {
             commands::shell::execute(
                 cli.token.as_deref(),
                 &command,
+                cli.quiet,
+                output_config.color,
+            )
+            .await
+        }
+        Some(Commands::Logs {
+            follow,
+            interval_ms,
+            source,
+        }) => {
+            debug!("dispatching: logs");
+            commands::logs::execute(
+                cli.token.as_deref(),
+                follow,
+                interval_ms,
+                source.into(),
+                &format,
+                cli.quiet,
+                output_config.color,
+            )
+            .await
+        }
+        Some(Commands::Screenshot { output: out_path }) => {
+            debug!("dispatching: screenshot");
+            commands::screenshot::execute(
+                cli.token.as_deref(),
+                out_path.as_deref(),
+                &format,
+                cli.quiet,
+                output_config.color,
+            )
+            .await
+        }
+        Some(Commands::Describe { tag, limit }) => {
+            debug!("dispatching: describe");
+            commands::describe::execute(
+                cli.token.as_deref(),
+                &tag,
+                limit,
+                &format,
                 cli.quiet,
                 output_config.color,
             )

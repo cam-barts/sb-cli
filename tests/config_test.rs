@@ -22,7 +22,7 @@ token = "secret123"
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["config", "show"])
+        .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .assert()
         .success()
@@ -57,7 +57,7 @@ fn config_show_env_override() {
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["config", "show"])
+        .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .env("SB_SYNC_WORKERS", "8")
         .assert()
@@ -75,7 +75,7 @@ fn config_show_defaults_when_no_config() {
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["config", "show"])
+        .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
         .env_remove("SB_SPACE")

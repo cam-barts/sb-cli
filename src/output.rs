@@ -37,6 +37,23 @@ pub fn is_tty() -> bool {
     std::io::stdout().is_terminal()
 }
 
+/// Resolve the user-facing output format.
+///
+/// When the user passes `--format <value>` explicitly, that value wins
+/// (this is what an opaque `Some(_)` represents). Otherwise we default to
+/// `Human` if stdout is a TTY and `Json` when piped, so that piping into
+/// `jq` / `grep` "just works" while interactive usage stays pretty.
+pub fn resolve_format(explicit: Option<crate::cli::OutputFormat>) -> crate::cli::OutputFormat {
+    if let Some(f) = explicit {
+        return f;
+    }
+    if is_tty() {
+        crate::cli::OutputFormat::Human
+    } else {
+        crate::cli::OutputFormat::Json
+    }
+}
+
 /// Print an error with colored "error:" prefix and optional hint.
 /// Output goes to stderr.
 pub fn print_error(error: &crate::error::SbError, color: bool) {

@@ -95,7 +95,7 @@ async fn query_returns_table_format() {
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["query", "from tags.page limit 2"])
+        .args(["--format", "human", "query", "from tags.page limit 2"])
         .current_dir(dir.path())
         .assert()
         .success()
@@ -194,7 +194,7 @@ async fn query_with_non_array_result_falls_back_to_json() {
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["query", "some_scalar_expr"])
+        .args(["--format", "human", "query", "some_scalar_expr"])
         .current_dir(dir.path())
         .assert()
         .success()

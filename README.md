@@ -14,9 +14,9 @@ Work with your SilverBullet notes from the terminal. Pages live on your local fi
 - Bidirectional sync with conflict detection and resolution
 - Page CRUD: create, read, edit, delete, append, move, list
 - Daily notes with configurable templates and date offsets
-- Space Lua evaluation and index queries via the Runtime API (optional)
+- Space Lua evaluation, index queries, log streaming, screenshots, and tag introspection via the Runtime API (optional)
 - OS keychain integration for token storage (optional)
-- `--format json` on any structured command
+- TTY-aware output: human-readable when interactive, JSON when piped
 - Single static binary
 
 ## Installation
@@ -100,6 +100,9 @@ sb daily
 | `sb sync resolve <path>` | Resolve a conflict (`--keep-local`, `--keep-remote`, `--diff`) |
 | `sb lua <expr>` | Evaluate a Space Lua expression via the Runtime API |
 | `sb query <query>` | Run an index query via the Runtime API |
+| `sb logs` | Stream client + server logs from the Runtime API (`--follow`, `--source client\|server\|both`) |
+| `sb screenshot` | Save a PNG of the headless browser's current state (`--output PATH\|-`) |
+| `sb describe <tag>` | Sample objects of a tag and report observed fields and types (`--limit N`) |
 | `sb shell <cmd>` | Execute a command on the server (opt-in, disabled by default) |
 | `sb auth set` | Set auth token (`--token` or interactive prompt) |
 | `sb config show` | Display resolved configuration (`--reveal` to unmask tokens) |
@@ -114,7 +117,7 @@ sb daily
 | `--quiet` | Suppress all informational output |
 | `--verbose` | Enable debug logging to stderr |
 | `--no-color` | Disable colored output |
-| `--format <human\|json>` | Output format (default: `human`) |
+| `--format <human\|json>` | Output format. Defaults to `human` when stdout is a TTY and `json` when piped, so `sb page list \| jq ...` works without an explicit flag. |
 | `--token <TOKEN>` | Auth token override (highest precedence) |
 
 ## Configuration

@@ -77,6 +77,36 @@ pub struct ServerConfig {
     pub enable_client_encryption: bool,
 }
 
+/// A single client or server log entry returned by GET /.runtime/logs.
+///
+/// All fields are optional because the SilverBullet runtime emits varying
+/// shapes (older versions omit timestamp; some entries are plain strings
+/// rather than objects, in which case the entry is captured in `message`).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct RuntimeLogEntry {
+    #[serde(default)]
+    pub level: Option<String>,
+    #[serde(default)]
+    pub message: String,
+    #[serde(default)]
+    pub timestamp: Option<i64>,
+}
+
+/// Logs payload returned by GET /.runtime/logs.
+///
+/// Splits client (browser-side) and server (Deno/headless) logs so callers can
+/// label them. `extra` collects any fields the server may add in the future.
+#[derive(Debug, Default, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeLogs {
+    #[serde(default)]
+    pub client_logs: Vec<RuntimeLogEntry>,
+    #[serde(default)]
+    pub server_logs: Vec<RuntimeLogEntry>,
+    #[serde(flatten, default)]
+    pub extra: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
 /// HTTP client wrapper for SilverBullet API.
 ///
 /// Bakes `X-Sync-Mode: true` and `Authorization: Bearer <token>` into every
@@ -313,6 +343,56 @@ impl SbClient {
                 .body(json_bytes.clone())
         })
         .await
+    }
+
+    /// GET `/.runtime/logs` — fetch buffered client and server logs.
+    ///
+    /// Returns `RuntimeLogs` with parsed `client_logs` and `server_logs`.
+    /// Returns `SbError::HttpStatus { status: 503, .. }` when the Runtime API
+    /// is not running so callers can map it to a friendlier message.
+    pub async fn get_runtime_logs(&self) -> SbResult<RuntimeLogs> {
+        let url = format!("{}/.runtime/logs", self.base_url);
+        let resp = self.send_with_retry(&url, || self.inner.get(&url)).await?;
+        if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
+            return Err(SbError::HttpStatus {
+                status: 503,
+                url,
+                body: "Runtime API not available".into(),
+            });
+        }
+        let resp = Self::check_response(resp, &url).await?;
+        let status = resp.status();
+        resp.json::<RuntimeLogs>()
+            .await
+            .map_err(|e| SbError::HttpStatus {
+                status: status.as_u16(),
+                url,
+                body: format!("failed to parse runtime logs: {e}"),
+            })
+    }
+
+    /// GET `/.runtime/screenshot` — fetch a PNG screenshot of the headless
+    /// browser's current state.
+    ///
+    /// Returns the raw PNG bytes. Returns `SbError::HttpStatus { status: 503 }`
+    /// when the Runtime API is not running.
+    pub async fn get_runtime_screenshot(&self) -> SbResult<Bytes> {
+        let url = format!("{}/.runtime/screenshot", self.base_url);
+        let resp = self.send_with_retry(&url, || self.inner.get(&url)).await?;
+        if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
+            return Err(SbError::HttpStatus {
+                status: 503,
+                url,
+                body: "Runtime API not available".into(),
+            });
+        }
+        let resp = Self::check_response(resp, &url).await?;
+        let status = resp.status();
+        resp.bytes().await.map_err(|e| SbError::HttpStatus {
+            status: status.as_u16(),
+            url,
+            body: format!("failed to read screenshot bytes: {e}"),
+        })
     }
 
     /// Probe Runtime API availability by sending an empty POST to `/.runtime/lua`.
@@ -1172,6 +1252,115 @@ mod tests {
         );
         assert_eq!(result.unwrap().status().as_u16(), 400);
         // MockServer verifies expect(1) on drop — ensures no retry happened
+    }
+
+    // --- get_runtime_logs tests ---
+
+    #[tokio::test]
+    async fn get_runtime_logs_parses_client_and_server_arrays() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"clientLogs":[{"level":"log","message":"hello","timestamp":1700000000000}],"serverLogs":[{"level":"error","message":"boom"}]}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let logs = client
+            .get_runtime_logs()
+            .await
+            .expect("get_runtime_logs should succeed");
+        assert_eq!(logs.client_logs.len(), 1);
+        assert_eq!(logs.client_logs[0].message, "hello");
+        assert_eq!(logs.client_logs[0].level.as_deref(), Some("log"));
+        assert_eq!(logs.client_logs[0].timestamp, Some(1700000000000));
+        assert_eq!(logs.server_logs.len(), 1);
+        assert_eq!(logs.server_logs[0].message, "boom");
+        assert_eq!(logs.server_logs[0].level.as_deref(), Some("error"));
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_returns_503_when_runtime_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .get_runtime_logs()
+            .await
+            .expect_err("503 should error");
+        match err {
+            SbError::HttpStatus { status, .. } => assert_eq!(status, 503),
+            other => panic!("expected HttpStatus(503), got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_handles_missing_arrays() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let logs = client
+            .get_runtime_logs()
+            .await
+            .expect("empty payload should deserialize to empty vecs");
+        assert!(logs.client_logs.is_empty());
+        assert!(logs.server_logs.is_empty());
+    }
+
+    // --- get_runtime_screenshot tests ---
+
+    #[tokio::test]
+    async fn get_runtime_screenshot_returns_png_bytes() {
+        let server = MockServer::start().await;
+        let png_magic = b"\x89PNG\r\n\x1a\nfake-image-bytes";
+        Mock::given(method("GET"))
+            .and(path("/.runtime/screenshot"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("Content-Type", "image/png")
+                    .set_body_bytes(png_magic.to_vec()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let bytes = client
+            .get_runtime_screenshot()
+            .await
+            .expect("screenshot should succeed");
+        assert_eq!(&bytes[..8], &png_magic[..8]);
+    }
+
+    #[tokio::test]
+    async fn get_runtime_screenshot_returns_503_when_runtime_unavailable() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/screenshot"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .get_runtime_screenshot()
+            .await
+            .expect_err("503 should error");
+        match err {
+            SbError::HttpStatus { status, .. } => assert_eq!(status, 503),
+            other => panic!("expected HttpStatus(503), got: {other:?}"),
+        }
     }
 
     #[tokio::test]

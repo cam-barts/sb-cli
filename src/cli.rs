@@ -23,9 +23,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_color: bool,
 
-    /// Output format: human or json
-    #[arg(long, global = true, default_value = "human")]
-    pub format: OutputFormat,
+    /// Output format: `human` for tables/colors or `json` for machine-readable.
+    /// When unset, defaults to `human` if stdout is a TTY and `json` otherwise.
+    #[arg(long, global = true)]
+    pub format: Option<OutputFormat>,
 
     /// Auth token override (highest precedence)
     #[arg(long, global = true)]
@@ -104,6 +105,50 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         command: Vec<String>,
     },
+    /// Fetch buffered client and server logs from the SilverBullet runtime
+    Logs {
+        /// Continue polling and print new entries as they arrive
+        #[arg(long, short = 'f')]
+        follow: bool,
+        /// Polling interval in milliseconds when --follow is set
+        #[arg(long, default_value_t = 2000)]
+        interval_ms: u64,
+        /// Which side to show: both (default), client, or server
+        #[arg(long, value_enum, default_value = "both")]
+        source: LogSourceArg,
+    },
+    /// Save a PNG screenshot of the SilverBullet headless browser
+    Screenshot {
+        /// Output path. Use `-` for stdout. Defaults to ./sb-screenshot-<utc>.png
+        /// when stdout is a TTY, otherwise raw PNG bytes are written to stdout.
+        #[arg(long, short = 'o')]
+        output: Option<String>,
+    },
+    /// Describe the observed schema of objects tagged with the given name
+    Describe {
+        /// Tag name to introspect (e.g. task, page, template)
+        tag: String,
+        /// Number of objects to sample when inferring the schema
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+    },
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum LogSourceArg {
+    Both,
+    Client,
+    Server,
+}
+
+impl From<LogSourceArg> for crate::commands::logs::LogSource {
+    fn from(value: LogSourceArg) -> Self {
+        match value {
+            LogSourceArg::Both => Self::Both,
+            LogSourceArg::Client => Self::Client,
+            LogSourceArg::Server => Self::Server,
+        }
+    }
 }
 
 #[derive(Subcommand)]

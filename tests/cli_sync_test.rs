@@ -254,7 +254,7 @@ async fn sync_conflicts_shows_no_conflicts_when_clean() {
     let space = setup_space(&dir, &server.uri());
 
     sb_in(&space)
-        .args(["sync", "conflicts"])
+        .args(["--format", "human", "sync", "conflicts"])
         .assert()
         .success()
         .stdout(predicate::str::contains("No conflicts"));

@@ -30,7 +30,7 @@ async fn server_ping_reports_reachability() {
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["server", "ping"])
+        .args(["--format", "human", "server", "ping"])
         .current_dir(temp_dir.path())
         .assert()
         .success()
@@ -76,7 +76,7 @@ async fn server_config_displays_fields() {
 
     Command::cargo_bin("sb")
         .unwrap()
-        .args(["server", "config"])
+        .args(["--format", "human", "server", "config"])
         .current_dir(temp_dir.path())
         .assert()
         .success()

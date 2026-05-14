@@ -129,7 +129,7 @@ fn page_list_limit_restricts_output_count() {
     write_page(&dir, "page-c", "content");
 
     let output = sb_cmd(&dir)
-        .args(["page", "list", "--limit", "1"])
+        .args(["--format", "human", "page", "list", "--limit", "1"])
         .assert()
         .success()
         .get_output()
@@ -154,7 +154,7 @@ fn page_list_sort_name_orders_alphabetically() {
     write_page(&dir, "mango", "m");
 
     let output = sb_cmd(&dir)
-        .args(["page", "list", "--sort", "name"])
+        .args(["--format", "human", "page", "list", "--sort", "name"])
         .assert()
         .success()
         .get_output()
