@@ -1081,7 +1081,7 @@ mod tests {
         std::fs::write(journal.join("2026-05-17.txt"), "").unwrap();
 
         let mut files = list_daily_files(tmp.path(), "Journal", "%Y-%m-%d").unwrap();
-        files.sort_by(|a, b| a.1.cmp(&b.1));
+        files.sort_by_key(|a| a.1);
         assert_eq!(files.len(), 2);
         assert_eq!(
             files[0].1,
