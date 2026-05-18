@@ -39,6 +39,11 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    permissions:
+      # Needed only for the badge-publish step below; the rest of the job is
+      # read-only. The badge step is gated to pushes on main so PR branches
+      # can't use this elevated permission.
+      contents: write
     env:
       # Region-coverage floor. The current sustained high is around 82%; this
       # is the ratchet — raise it (in a dedicated PR) when the repo holds a
@@ -89,3 +94,48 @@ jobs:
             coverage-summary.json
             coverage-html/
           retention-days: 14
+
+      - name: Publish coverage badge to `badges` branch
+        # Only run on main pushes — PRs can't (and shouldn't) update the badge.
+        # The README badge URL points at this branch's coverage.json via the
+        # shields.io endpoint API.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          set -euo pipefail
+          PCT=$(jq -r '.data[0].totals.regions.percent' coverage-summary.json)
+          PCT_INT=${PCT%.*}
+          PCT_FMT=$(printf '%.1f' "$PCT")
+          if [ "$PCT_INT" -ge 90 ]; then COLOR=brightgreen
+          elif [ "$PCT_INT" -ge 80 ]; then COLOR=green
+          elif [ "$PCT_INT" -ge 70 ]; then COLOR=yellow
+          elif [ "$PCT_INT" -ge 60 ]; then COLOR=orange
+          else COLOR=red
+          fi
+          printf '{\n  "schemaVersion": 1,\n  "label": "coverage",\n  "message": "%s%%",\n  "color": "%s"\n}\n' \
+            "$PCT_FMT" "$COLOR" > /tmp/coverage.json
+          echo "Generated badge JSON:"
+          cat /tmp/coverage.json
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          # Check out (or create) the orphan badges branch in a separate worktree
+          # so we never touch the main checkout.
+          if git ls-remote --exit-code --heads origin badges >/dev/null 2>&1; then
+            git fetch origin badges:badges
+            git worktree add /tmp/badges-wt badges
+          else
+            git worktree add --detach /tmp/badges-wt HEAD
+            git -C /tmp/badges-wt checkout --orphan badges
+            git -C /tmp/badges-wt rm -rf . >/dev/null 2>&1 || true
+          fi
+
+          cp /tmp/coverage.json /tmp/badges-wt/coverage.json
+          cd /tmp/badges-wt
+          git add coverage.json
+          if git diff --cached --quiet; then
+            echo "Coverage badge unchanged (${PCT_FMT}%); skipping push."
+          else
+            git commit -m "Update coverage badge to ${PCT_FMT}%"
+            git push origin badges
+          fi

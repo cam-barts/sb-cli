@@ -1,7 +1,7 @@
 # sb
 
 [![CI](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-81%25-brightgreen)](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fcam-barts%2Fsb-cli%2Fbadges%2Fcoverage.json)](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/cam-barts/sb-cli)](https://github.com/cam-barts/sb-cli/releases/latest)
 
@@ -219,8 +219,12 @@ CI enforces a region-coverage floor of **80%** on every push and pull request
 build. The threshold is intentionally a ratchet — raise it (in its own PR) when
 the repo holds a new sustained high; don't lower it without an explicit waiver.
 
-The coverage badge at the top of this README is a static shield. When the floor
-in `ci.yml` is raised, update the badge URL to match (e.g. `coverage-85%25`).
+The coverage badge at the top of this README is auto-updated by CI. On every
+push to `main`, the `coverage` job writes a [shields.io endpoint
+JSON](https://shields.io/badges/endpoint-badge) to the `badges` branch with the
+current region-coverage percentage and a colour bucket
+(`brightgreen` ≥ 90, `green` ≥ 80, `yellow` ≥ 70, `orange` ≥ 60, otherwise
+`red`). PRs intentionally don't update the badge — only merges to `main` do.
 
 ## Attribution
 
