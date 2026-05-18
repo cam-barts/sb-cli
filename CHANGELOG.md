@@ -1,3 +1,9 @@
+## v1.3.1 (2026-05-18)
+
+### Fix
+
+- **clippy**: use sort_by_key for Date keys (rustc 1.95 lint)
+
 ## v1.3.0 (2026-05-18)
 
 ### Feat
