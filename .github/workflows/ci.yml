@@ -40,10 +40,10 @@ jobs:
     name: Coverage
     runs-on: ubuntu-latest
     permissions:
-      # Needed only for the badge-publish step below; the rest of the job is
-      # read-only. The badge step is gated to pushes on main so PR branches
-      # can't use this elevated permission.
-      contents: write
+      # The default GITHUB_TOKEN stays read-only. The badge-publish step uses
+      # an App installation token so it can push to a ruleset-protected
+      # `badges` branch via the App's bypass entry.
+      contents: read
     env:
       # Region-coverage floor. The current sustained high is around 82%; this
       # is the ratchet — raise it (in a dedicated PR) when the repo holds a
@@ -95,11 +95,34 @@ jobs:
             coverage-html/
           retention-days: 14
 
-      - name: Publish coverage badge to `badges` branch
-        # Only run on main pushes — PRs can't (and shouldn't) update the badge.
-        # The README badge URL points at this branch's coverage.json via the
-        # shields.io endpoint API.
+      - name: Mint App installation token for badge push
+        # Only main pushes update the badge; conditional keeps the token mint
+        # off PR runs (no secret leak on forks, no rate-limit churn).
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - name: Resolve App bot user id
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        id: bot-id
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          USER_ID=$(gh api "/users/${{ steps.app-token.outputs.app-slug }}[bot]" --jq .id)
+          echo "user-id=$USER_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Publish coverage badge to `badges` branch
+        # The README badge URL points at this branch's coverage.json via the
+        # shields.io endpoint API. Pushes go through the App token so they
+        # survive the `badges` ruleset.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          BOT_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          BOT_USER_ID: ${{ steps.bot-id.outputs.user-id }}
         run: |
           set -euo pipefail
           PCT=$(jq -r '.data[0].totals.regions.percent' coverage-summary.json)
@@ -116,8 +139,12 @@ jobs:
           echo "Generated badge JSON:"
           cat /tmp/coverage.json
 
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name  "${BOT_SLUG}[bot]"
+          git config user.email "${BOT_USER_ID}+${BOT_SLUG}[bot]@users.noreply.github.com"
+
+          # The checkout step uses GITHUB_TOKEN by default; override origin
+          # to use the App token so this step's push is App-authenticated.
+          git remote set-url origin "https://x-access-token:${APP_TOKEN}@github.com/${{ github.repository }}.git"
 
           # Check out (or create) the orphan badges branch in a separate worktree
           # so we never touch the main checkout.
