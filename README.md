@@ -1,6 +1,7 @@
 # sb
 
 [![CI](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml/badge.svg)](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-81%25-brightgreen)](https://github.com/cam-barts/sb-cli/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Latest Release](https://img.shields.io/github/v/release/cam-barts/sb-cli)](https://github.com/cam-barts/sb-cli/releases/latest)
 
@@ -217,6 +218,9 @@ CI enforces a region-coverage floor of **80%** on every push and pull request
 (`coverage` job in `.github/workflows/ci.yml`). Drops below the floor fail the
 build. The threshold is intentionally a ratchet — raise it (in its own PR) when
 the repo holds a new sustained high; don't lower it without an explicit waiver.
+
+The coverage badge at the top of this README is a static shield. When the floor
+in `ci.yml` is raised, update the badge URL to match (e.g. `coverage-85%25`).
 
 ## Attribution
 
