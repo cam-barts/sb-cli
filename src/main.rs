@@ -153,20 +153,44 @@ async fn main() {
             }
         }
         Some(Commands::Daily {
-            append,
+            entry,
             yesterday,
             offset,
+            on,
+            star,
+            time,
+            no_time,
+            append,
+            limit,
+            from,
+            to,
+            contains,
+            tags,
+            starred,
+            short,
         }) => {
             debug!("dispatching: daily");
-            commands::daily::execute(
-                cli.token.as_deref(),
-                append.as_deref(),
+            commands::daily::execute(commands::daily::DailyArgs {
+                cli_token: cli.token.as_deref(),
+                entry,
                 yesterday,
                 offset,
-                &format,
-                cli.quiet,
-                output_config.color,
-            )
+                on: on.as_deref(),
+                star,
+                time: time.as_deref(),
+                no_time,
+                append: append.as_deref(),
+                limit,
+                from: from.as_deref(),
+                to: to.as_deref(),
+                contains: contains.as_deref(),
+                tags,
+                starred,
+                short,
+                format: &format,
+                quiet: cli.quiet,
+                color: output_config.color,
+            })
             .await
         }
         Some(Commands::Sync { command, dry_run }) => {

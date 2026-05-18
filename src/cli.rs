@@ -69,17 +69,66 @@ pub enum Commands {
         #[command(subcommand)]
         command: PageCommands,
     },
-    /// Open today's daily note
+    /// Open, write, or list daily journal entries
+    ///
+    /// Positional text is appended as a timestamped bullet to today's note.
+    /// When stdin is piped and no positional text is given, stdin becomes the entry.
+    /// With no text and no view flag, opens the day's note in $EDITOR.
+    /// View flags (-n, --from, --to, --on, --contains, --tags, --starred, --short)
+    /// switch to read mode and list past entries; positional text in read mode
+    /// is treated as a --contains filter.
+    ///
+    /// Entry text may begin with a date prefix to route to another day:
+    /// "today: ...", "yesterday: ...", or "YYYY-MM-DD: ...".
     Daily {
-        /// Append text without opening editor
-        #[arg(long)]
-        append: Option<String>,
-        /// Target yesterday's note
+        /// Entry text. Joined with spaces. In read mode, treated as a --contains filter.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        entry: Vec<String>,
+
+        /// Target yesterday's note (write or read)
         #[arg(long)]
         yesterday: bool,
-        /// Target note N days from today (negative = past)
-        #[arg(long, allow_hyphen_values = true)]
+        /// Target the note N days from today (negative = past)
+        #[arg(long, allow_hyphen_values = true, conflicts_with = "on")]
         offset: Option<i64>,
+        /// Target a specific date (YYYY-MM-DD). Read-mode: filter to this day only.
+        #[arg(long, value_name = "YYYY-MM-DD", conflicts_with = "yesterday")]
+        on: Option<String>,
+
+        /// Star this entry ([starred:: true] attribute)
+        #[arg(long)]
+        star: bool,
+        /// Override the entry time (HH:MM)
+        #[arg(long, value_name = "HH:MM")]
+        time: Option<String>,
+        /// Omit the time attribute on this entry
+        #[arg(long, conflicts_with = "time")]
+        no_time: bool,
+        /// Legacy synonym for the positional entry (kept for back-compat)
+        #[arg(long, value_name = "TEXT")]
+        append: Option<String>,
+
+        /// List the most recent N matching entries (triggers read mode)
+        #[arg(long, short = 'n', value_name = "N")]
+        limit: Option<usize>,
+        /// List entries from this date onward (YYYY-MM-DD; triggers read mode)
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        from: Option<String>,
+        /// List entries up to this date (YYYY-MM-DD; triggers read mode)
+        #[arg(long, value_name = "YYYY-MM-DD")]
+        to: Option<String>,
+        /// Filter entries containing this substring (case-insensitive; triggers read mode)
+        #[arg(long, value_name = "TEXT")]
+        contains: Option<String>,
+        /// Filter entries with at least one of these #tags (comma-separated; triggers read mode)
+        #[arg(long, value_delimiter = ',', value_name = "TAG")]
+        tags: Vec<String>,
+        /// Show only starred entries (triggers read mode)
+        #[arg(long)]
+        starred: bool,
+        /// One-line-per-entry rendering in read mode
+        #[arg(long)]
+        short: bool,
     },
     /// Sync local space with the server
     Sync {

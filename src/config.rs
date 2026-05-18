@@ -35,6 +35,10 @@ pub struct DailyConfigFile {
     #[serde(rename = "dateFormat")]
     pub date_format: Option<String>,
     pub template: Option<String>,
+    #[serde(rename = "timeFormat")]
+    pub time_format: Option<String>,
+    #[serde(rename = "bulletStyle")]
+    pub bullet_style: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -100,6 +104,8 @@ pub struct ResolvedConfig {
     pub daily_path: ResolvedValue<String>,
     pub daily_date_format: ResolvedValue<String>,
     pub daily_template: ResolvedValue<Option<String>>,
+    pub daily_time_format: ResolvedValue<String>,
+    pub daily_bullet_style: ResolvedValue<String>,
     pub shell_enabled: ResolvedValue<bool>,
     pub auth_keychain: ResolvedValue<bool>,
     pub runtime_available: ResolvedValue<bool>,
@@ -212,6 +218,24 @@ impl ResolvedConfig {
         );
         let daily_template =
             Self::resolve_optional_string("SB_DAILY_TEMPLATE", config_file.daily.template);
+        let daily_time_format = Self::resolve_string(
+            "SB_DAILY_TIME_FORMAT",
+            config_file.daily.time_format,
+            "%H:%M".to_string(),
+        );
+        let daily_bullet_style = Self::resolve_string(
+            "SB_DAILY_BULLET_STYLE",
+            config_file.daily.bullet_style,
+            "*".to_string(),
+        );
+        if daily_bullet_style.value != "*" && daily_bullet_style.value != "-" {
+            return Err(SbError::Config {
+                message: format!(
+                    "invalid daily.bulletStyle: {:?} (expected \"*\" or \"-\")",
+                    daily_bullet_style.value
+                ),
+            });
+        }
 
         let shell_enabled =
             Self::resolve_bool("SB_SHELL_ENABLED", config_file.shell.enabled, false)?;
@@ -231,6 +255,8 @@ impl ResolvedConfig {
             daily_path,
             daily_date_format,
             daily_template,
+            daily_time_format,
+            daily_bullet_style,
             shell_enabled,
             auth_keychain,
             runtime_available,
@@ -936,6 +962,91 @@ available = false
             content.contains("available = true"),
             "value should be updated to true"
         );
+    }
+
+    #[test]
+    fn daily_time_format_defaults_to_hh_mm() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert_eq!(config.daily_time_format.value, "%H:%M");
+        assert_eq!(config.daily_time_format.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn daily_time_format_loads_from_file() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = setup_config_dir(
+            r#"
+[daily]
+timeFormat = "%H:%M:%S"
+"#,
+        );
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert_eq!(config.daily_time_format.value, "%H:%M:%S");
+        assert_eq!(config.daily_time_format.source, ConfigSource::File);
+    }
+
+    #[test]
+    fn daily_time_format_env_var_overrides_file() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = setup_config_dir(
+            r#"
+[daily]
+timeFormat = "%H:%M"
+"#,
+        );
+        std::env::set_var("SB_DAILY_TIME_FORMAT", "%I:%M %p");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        std::env::remove_var("SB_DAILY_TIME_FORMAT");
+        assert_eq!(config.daily_time_format.value, "%I:%M %p");
+        assert_eq!(
+            config.daily_time_format.source,
+            ConfigSource::Env("SB_DAILY_TIME_FORMAT".to_string())
+        );
+    }
+
+    #[test]
+    fn daily_bullet_style_defaults_to_star() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert_eq!(config.daily_bullet_style.value, "*");
+        assert_eq!(config.daily_bullet_style.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn daily_bullet_style_dash_is_accepted() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = setup_config_dir(
+            r#"
+[daily]
+bulletStyle = "-"
+"#,
+        );
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert_eq!(config.daily_bullet_style.value, "-");
+    }
+
+    #[test]
+    fn daily_bullet_style_invalid_value_errors() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let dir = setup_config_dir(
+            r#"
+[daily]
+bulletStyle = "+"
+"#,
+        );
+        let err = ResolvedConfig::load_from(dir.path()).unwrap_err();
+        match err {
+            SbError::Config { message } => {
+                assert!(
+                    message.contains("bulletStyle"),
+                    "expected message to mention bulletStyle, got: {message}"
+                );
+            }
+            other => panic!("expected Config error, got: {other:?}"),
+        }
     }
 
     #[test]

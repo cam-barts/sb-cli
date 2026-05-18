@@ -14,6 +14,7 @@ Work with your SilverBullet notes from the terminal. Pages live on your local fi
 - Bidirectional sync with conflict detection and resolution
 - Page CRUD: create, read, edit, delete, append, move, list
 - Daily notes with configurable templates and date offsets
+- Journaling: quick-entry, stdin, date-prefix routing, list/filter past entries (jrnl-flavoured)
 - Space Lua evaluation, index queries, log streaming, screenshots, and tag introspection via the Runtime API (optional)
 - OS keychain integration for token storage (optional)
 - TTY-aware output: human-readable when interactive, JSON when piped
@@ -79,6 +80,42 @@ sb sync pull
 sb daily
 ```
 
+### Journaling
+
+`sb daily` doubles as a journal in the spirit of [jrnl](https://jrnl.sh), but
+each entry lands as a SilverBullet bullet with inline attributes
+(`[time:: 14:32]`, `[starred:: true]`), so they are queryable from Space Lua and
+`sb query` rather than living in opaque `.txt` files.
+
+```sh
+# Quick entry — joined positional text becomes a timestamped bullet
+sb daily Finished the migration spike
+
+# Stdin pipe — multi-line entries land as a single bullet with continuation indent
+echo "two\nthoughts" | sb daily
+
+# Route to another day with a small natural-date prefix
+sb daily today: wrote the plan
+sb daily yesterday: pretended to write the plan
+sb daily 2026-05-15: backfilled
+
+# Star an entry (sets [starred:: true])
+sb daily --star celebrated finishing the cutover
+
+# Override or omit the time attribute
+sb daily --time 09:00 morning standup
+sb daily --no-time todo: pick up groceries
+
+# Listing/filtering past entries — any view flag switches read mode
+sb daily -n 5
+sb daily --from 2026-05-01 --contains migration
+sb daily --tags engineering,ops --starred --short
+sb daily --on 2026-05-15 --format json | jq .
+```
+
+Want to drop the `daily` suffix? Add `alias jrnl='sb daily'` to your shell rc;
+all flags above work unchanged.
+
 ## Commands
 
 | Command | Description |
@@ -91,7 +128,7 @@ sb daily
 | `sb page delete <name>` | Delete a page (`--force` to skip confirmation) |
 | `sb page append <name>` | Append content to a page (`--content`) |
 | `sb page move <from> <to>` | Rename or move a page |
-| `sb daily` | Open today's daily note (`--yesterday`, `--offset`, `--append`) |
+| `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
 | `sb sync` | Bidirectional sync: pull then push (`--dry-run`) |
 | `sb sync pull` | Pull changes from server (`--dry-run`) |
 | `sb sync push` | Push local changes to server (`--dry-run`) |
@@ -138,6 +175,8 @@ include = []               # Force-include patterns (default: [])
 path = "Journal/{{date}}"  # Daily note path template (default: "Journal/{{date}}")
 dateFormat = "%Y-%m-%d"    # Date format string (default: "%Y-%m-%d")
 template = "Daily"         # Template page name (optional)
+timeFormat = "%H:%M"       # Time format used for [time:: ...] attributes (default: "%H:%M")
+bulletStyle = "*"          # Bullet character for journal entries: "*" or "-" (default: "*")
 
 [shell]
 enabled = false            # Enable shell endpoint access (default: false)
@@ -167,6 +206,7 @@ Inspired by:
 
 - [zk](https://github.com/zk-org/zk) -- plain text note-taking from the terminal (which I still love using)
 - [nb](https://github.com/xwmx/nb) -- command line notebook, bookmarking, and knowledge base
+- [jrnl](https://jrnl.sh) -- friction-free CLI journaling. `sb daily` borrows its quick-entry ergonomics (positional text, stdin, date-prefix routing, view flags) while keeping every entry as a SilverBullet bullet with inline attributes so it stays queryable
 
 Most of this project was vibe coded with [Claude Opus 4.6](https://docs.anthropic.com/en/docs/about-claude/models) via [Claude Code](https://docs.anthropic.com/en/docs/claude-code) to meet one person's specific requirements (mine).
 Credit to the enormous body of open source software the models were trained on, this project wouldn't exist without it.
