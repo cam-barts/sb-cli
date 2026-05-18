@@ -226,6 +226,25 @@ current region-coverage percentage and a colour bucket
 (`brightgreen` ≥ 90, `green` ≥ 80, `yellow` ≥ 70, `orange` ≥ 60, otherwise
 `red`). PRs intentionally don't update the badge — only merges to `main` do.
 
+### Locking the `badges` branch to CI
+
+Recommended one-time setup so the badge can only be moved by the workflow:
+
+1. Settings → Branches → **Add branch protection rule** (or Settings → Rules →
+   Rulesets → **New branch ruleset** for the newer flow).
+2. Branch name pattern: `badges`.
+3. Enable **Restrict who can push to matching branches** (classic) or
+   **Restrict updates** (ruleset).
+4. Allow only `github-actions[bot]` to push (classic: add it to the allow-list;
+   ruleset: leave the rule rejecting everyone and add `github-actions[bot]` —
+   or "Repository admin" if you want a manual override — as a bypass actor).
+5. Optional but recommended: enable **Do not allow force pushes** and **Do not
+   allow deletions** so the branch's history is append-only.
+
+Same pattern works for `main` once you're ready to gate direct pushes:
+require the `test`, `lint`, and `coverage` checks, restrict who can push, and
+disable force-pushes.
+
 ## Attribution
 
 Built for [SilverBullet](https://silverbullet.md), created by [Zef Hemel](https://github.com/zefhemel).
