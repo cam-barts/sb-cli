@@ -76,3 +76,102 @@ pub async fn execute_set(token_flag: Option<String>, quiet: bool, color: bool) -
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::CwdGuard;
+
+    #[tokio::test]
+    async fn errors_when_no_space_initialized() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = CwdGuard::set(tmp.path());
+        let err = execute_set(Some("tok".into()), true, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SbError::NotInitialized));
+    }
+
+    #[tokio::test]
+    async fn errors_when_token_flag_is_empty_string() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".sb")).unwrap();
+        std::fs::write(
+            tmp.path().join(".sb").join("config.toml"),
+            "server_url = \"https://example.com\"\n",
+        )
+        .unwrap();
+        let _g = CwdGuard::set(tmp.path());
+
+        let err = execute_set(Some(String::new()), true, false)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::Usage(msg) => assert!(msg.contains("no token")),
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn errors_when_config_has_no_server_url() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".sb")).unwrap();
+        // Initialized space but server_url is absent — auth set needs it to anchor the token.
+        std::fs::write(tmp.path().join(".sb").join("config.toml"), "").unwrap();
+        let _g = CwdGuard::set(tmp.path());
+
+        let err = execute_set(Some("tok".into()), true, false)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::Config { message } => assert!(message.contains("no server_url")),
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn writes_token_to_config_file_when_keychain_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".sb")).unwrap();
+        std::fs::write(
+            tmp.path().join(".sb").join("config.toml"),
+            "server_url = \"https://example.com\"\n",
+        )
+        .unwrap();
+        let _g = CwdGuard::set(tmp.path());
+
+        execute_set(Some("new-secret-token".into()), true, false)
+            .await
+            .expect("auth set should succeed");
+
+        let content = std::fs::read_to_string(tmp.path().join(".sb").join("config.toml")).unwrap();
+        // Behavior: token is now present, server_url is preserved.
+        assert!(
+            content.contains("new-secret-token"),
+            "token must be written"
+        );
+        assert!(
+            content.contains("example.com"),
+            "server_url must be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn overwrites_existing_token_in_config_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".sb")).unwrap();
+        std::fs::write(
+            tmp.path().join(".sb").join("config.toml"),
+            "server_url = \"https://example.com\"\ntoken = \"old-token\"\n",
+        )
+        .unwrap();
+        let _g = CwdGuard::set(tmp.path());
+
+        execute_set(Some("brand-new-token".into()), true, false)
+            .await
+            .expect("auth set");
+        let content = std::fs::read_to_string(tmp.path().join(".sb").join("config.toml")).unwrap();
+        assert!(content.contains("brand-new-token"));
+        assert!(!content.contains("old-token"), "old token must be gone");
+    }
+}

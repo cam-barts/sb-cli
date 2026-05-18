@@ -84,3 +84,120 @@ pub async fn execute(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{make_space, SbSpaceGuard};
+    use wiremock::matchers::{body_json_string, method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn enable_shell(space_root: &std::path::Path) {
+        crate::config::update_config_value(&space_root.join(".sb"), "shell", "enabled", true)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn errors_when_shell_disabled_by_default() {
+        // Default config: shell.enabled = false. Must refuse before any HTTP.
+        let tmp = make_space(Some("http://127.0.0.1:1"));
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(None, &["echo".to_string(), "hi".to_string()], true, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SbError::Usage(_)));
+    }
+
+    #[tokio::test]
+    async fn errors_when_command_is_empty() {
+        let tmp = make_space(Some("http://127.0.0.1:1"));
+        enable_shell(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(None, &[], true, false).await.unwrap_err();
+        match err {
+            SbError::Usage(msg) => assert!(msg.contains("no command")),
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn sends_cmd_and_args_as_json_to_dot_shell() {
+        let server = MockServer::start().await;
+        // Wiremock matches an exact JSON body — proves we serialize cmd+args correctly.
+        Mock::given(method("POST"))
+            .and(path("/.shell"))
+            .and(body_json_string(
+                r#"{"cmd":"echo","args":["hello","world"]}"#,
+            ))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"stdout":"hello world\n","stderr":"","code":0}"#),
+            )
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_shell(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = execute(
+            None,
+            &["echo".to_string(), "hello".to_string(), "world".to_string()],
+            true,
+            false,
+        )
+        .await;
+        assert!(res.is_ok(), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn nonzero_exit_code_returns_process_failed_with_code_and_stderr() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.shell"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"{"stdout":"","stderr":"oops","code":2}"#),
+            )
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_shell(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(None, &["false".to_string()], true, false)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::ProcessFailed { code, stderr } => {
+                assert_eq!(code, 2);
+                assert_eq!(stderr, "oops");
+            }
+            other => panic!("expected ProcessFailed, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_json_response_returns_http_status_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.shell"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_shell(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(None, &["x".to_string()], true, false)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::HttpStatus { body, .. } => {
+                assert!(body.contains("invalid shell response JSON"))
+            }
+            other => panic!("expected HttpStatus, got: {other:?}"),
+        }
+    }
+}

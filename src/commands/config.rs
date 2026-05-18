@@ -265,3 +265,125 @@ fn print_json(config: &ResolvedConfig, reveal: bool) {
         serde_json::to_string_pretty(&output).expect("JSON serialization")
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{make_space, SbSpaceGuard};
+
+    #[test]
+    fn source_annotation_renders_each_source_variant() {
+        // Verifies the annotation shape users see in `config show` — driving downstream tests
+        // that grep for "(env: ...)" etc.
+        assert_eq!(source_annotation(&ConfigSource::Default), "# (default)");
+        assert_eq!(source_annotation(&ConfigSource::File), "# (config)");
+        assert_eq!(
+            source_annotation(&ConfigSource::Env("SB_FOO".into())),
+            "# (env: SB_FOO)"
+        );
+    }
+
+    #[test]
+    fn format_string_value_masks_token_when_reveal_is_false() {
+        let v = Some("sk-abc123def456".to_string());
+        let masked = format_string_value(&v, true, false);
+        assert!(masked.contains("sk-"));
+        assert!(masked.contains("456"));
+        assert!(!masked.contains("abc123def"), "middle must be hidden");
+    }
+
+    #[test]
+    fn format_string_value_reveals_token_when_reveal_is_true() {
+        let v = Some("sk-abc123def456".to_string());
+        let revealed = format_string_value(&v, true, true);
+        assert!(revealed.contains("abc123def456"));
+    }
+
+    #[test]
+    fn format_string_value_non_token_is_never_masked() {
+        let v = Some("https://example.com".to_string());
+        assert!(format_string_value(&v, false, false).contains("example.com"));
+    }
+
+    #[test]
+    fn format_string_value_none_renders_not_set() {
+        assert_eq!(format_string_value(&None, false, false), "(not set)");
+    }
+
+    #[test]
+    fn format_vec_value_quotes_each_entry() {
+        let s = format_vec_value(&["a".to_string(), "b".to_string()]);
+        assert_eq!(s, "[\"a\", \"b\"]");
+    }
+
+    #[test]
+    fn format_vec_value_empty_is_brackets() {
+        let s = format_vec_value(&[]);
+        assert_eq!(s, "[]");
+    }
+
+    #[test]
+    fn source_to_json_string_round_trips_each_variant() {
+        assert_eq!(source_to_json_string(&ConfigSource::Default), "default");
+        assert_eq!(source_to_json_string(&ConfigSource::File), "config");
+        assert_eq!(
+            source_to_json_string(&ConfigSource::Env("SB_X".into())),
+            "env: SB_X"
+        );
+        assert_eq!(
+            source_to_json_string(&ConfigSource::Flag("--y".into())),
+            "flag: --y"
+        );
+    }
+
+    #[test]
+    fn execute_show_is_noop_when_quiet() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        // Quiet path: early-return Ok without touching config resolution.
+        execute_show(false, &OutputFormat::Human, true).expect("quiet show should succeed");
+    }
+
+    #[test]
+    fn execute_show_succeeds_with_configured_space_human() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_show(false, &OutputFormat::Human, false)
+            .expect("show should succeed when space is configured");
+    }
+
+    #[test]
+    fn execute_show_succeeds_with_configured_space_json() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_show(true, &OutputFormat::Json, false)
+            .expect("show should succeed in json format with reveal");
+    }
+
+    #[test]
+    fn execute_set_space_errors_when_target_has_no_sb_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path_str = tmp.path().display().to_string();
+        let _g = SbSpaceGuard::set(tmp.path());
+        let err = execute_set_space(&path_str, true, false).unwrap_err();
+        match err {
+            SbError::Usage(msg) => assert!(msg.contains("no .sb/")),
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn execute_get_space_quiet_returns_ok_without_printing() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_get_space(&OutputFormat::Human, true).expect("quiet path");
+    }
+
+    #[test]
+    fn execute_get_space_uses_sb_space_env_source() {
+        // get_space prefers SB_SPACE over cwd walk-up; we already set SB_SPACE via the guard.
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_get_space(&OutputFormat::Json, false).expect("env-sourced path");
+    }
+}

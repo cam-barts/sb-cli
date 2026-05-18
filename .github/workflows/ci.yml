@@ -35,3 +35,57 @@ jobs:
       - name: Install system dependencies
         run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
       - run: cargo test
+
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+    env:
+      # Region-coverage floor. The current sustained high is around 82%; this
+      # is the ratchet — raise it (in a dedicated PR) when the repo holds a
+      # new sustained high. Don't lower it without an explicit waiver from
+      # the maintainer.
+      COVERAGE_MIN_PCT: "80"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libdbus-1-dev
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      - name: Run tests under coverage instrumentation
+        # --no-report captures coverage data without rendering, so the report
+        # subcommands below can read the same data set in multiple formats.
+        run: cargo llvm-cov --lib --no-report
+      - name: Generate coverage reports
+        run: |
+          cargo llvm-cov report --json --summary-only --output-path coverage-summary.json
+          cargo llvm-cov report --lcov --output-path coverage.lcov
+          cargo llvm-cov report --html --output-dir coverage-html
+      - name: Enforce coverage threshold
+        run: |
+          set -euo pipefail
+          PCT=$(jq -r '.data[0].totals.regions.percent' coverage-summary.json)
+          LINES_PCT=$(jq -r '.data[0].totals.lines.percent' coverage-summary.json)
+          FUNCS_PCT=$(jq -r '.data[0].totals.functions.percent' coverage-summary.json)
+          echo "::notice::Coverage — region=${PCT}% line=${LINES_PCT}% function=${FUNCS_PCT}%"
+          INT_PCT=${PCT%.*}
+          MIN=${COVERAGE_MIN_PCT}
+          if [ "${INT_PCT}" -lt "${MIN}" ]; then
+            echo "::error::Region coverage ${PCT}% is below the required ${MIN}% floor"
+            exit 1
+          fi
+      - name: Upload coverage artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ github.sha }}
+          path: |
+            coverage.lcov
+            coverage-summary.json
+            coverage-html/
+          retention-days: 14

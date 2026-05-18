@@ -153,3 +153,145 @@ fn value_to_string(v: &serde_json::Value) -> String {
         other => other.to_string(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{make_space, SbSpaceGuard};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn enable_runtime(space_root: &std::path::Path) {
+        crate::config::update_config_value(&space_root.join(".sb"), "runtime", "available", true)
+            .unwrap();
+    }
+
+    #[test]
+    fn value_to_string_unwraps_quoted_strings() {
+        // String values must render without their JSON quotes — otherwise table cells
+        // would print '"hello"' instead of 'hello'.
+        assert_eq!(value_to_string(&serde_json::json!("hello")), "hello");
+    }
+
+    #[test]
+    fn value_to_string_null_renders_blank() {
+        assert_eq!(value_to_string(&serde_json::Value::Null), "");
+    }
+
+    #[test]
+    fn value_to_string_preserves_number_form() {
+        assert_eq!(value_to_string(&serde_json::json!(42)), "42");
+        assert_eq!(value_to_string(&serde_json::json!(true)), "true");
+    }
+
+    #[tokio::test]
+    async fn errors_when_runtime_disabled() {
+        let tmp = make_space(Some("http://127.0.0.1:1"));
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(
+            None,
+            "from index.tag 'page'",
+            &OutputFormat::Json,
+            true,
+            false,
+        )
+        .await
+        .unwrap_err();
+        assert!(format!("{err}").contains("Runtime API not available"));
+    }
+
+    #[tokio::test]
+    async fn returns_query_error_when_server_reports_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua_script"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(r#"{"error":"bad query syntax"}"#),
+            )
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_runtime(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(None, "garbage", &OutputFormat::Json, true, false)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::HttpStatus { body, .. } => assert!(body.contains("bad query syntax")),
+            other => panic!("expected HttpStatus, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn succeeds_on_array_of_objects_result_human_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua_script"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"result":[{"name":"Foo","count":3},{"name":"Bar","count":5}]}"#,
+            ))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_runtime(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = execute(None, "from a", &OutputFormat::Human, true, false).await;
+        assert!(res.is_ok(), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn succeeds_on_empty_array_result_human_format() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua_script"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":[]}"#))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_runtime(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = execute(None, "from b", &OutputFormat::Human, true, false).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn succeeds_on_non_array_result_falls_back_to_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua_script"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":42}"#))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_runtime(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = execute(None, "from c", &OutputFormat::Human, true, false).await;
+        assert!(res.is_ok());
+    }
+
+    #[tokio::test]
+    async fn returns_error_on_invalid_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua_script"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("not json"))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        enable_runtime(tmp.path());
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute(None, "from d", &OutputFormat::Json, true, false)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::HttpStatus { body, .. } => assert!(body.contains("invalid JSON")),
+            other => panic!("expected HttpStatus, got: {other:?}"),
+        }
+    }
+}

@@ -198,84 +198,114 @@ async fn init_inner(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    fn setup_sb_dir() -> tempfile::TempDir {
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let sb_dir = dir.path().join(".sb");
-        std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
-        dir
-    }
+    // The "already initialized", "WAL mode", and "write_config_file" cases that
+    // used to live here were testing things `init::execute` doesn't itself do
+    // (constructing an error variant; using `Connection::open` directly; calling
+    // `config::write_config_file` directly). They've been replaced by the
+    // `execute_tests` module below, which calls `execute` against a tempdir and
+    // verifies the observable result (.sb/state.db on disk, config contents,
+    // error variants).
 
-    #[test]
-    fn url_trailing_slash_is_stripped() {
-        // Verify that trailing slash normalization happens in execute
-        let url = "https://example.com/".trim_end_matches('/').to_string();
-        assert_eq!(url, "https://example.com");
-    }
+    mod execute_tests {
+        use super::super::*;
+        use crate::test_util::{CwdGuard, XdgGuard};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    #[test]
-    fn already_initialized_returns_error() {
-        let dir = setup_sb_dir();
-        // .sb/ already exists in dir; test the check logic directly
-        let sb_dir = dir.path().join(".sb");
-        assert!(sb_dir.exists());
-        let err = SbError::AlreadyInitialized {
-            path: sb_dir.display().to_string(),
-        };
-        match err {
-            SbError::AlreadyInitialized { path } => {
-                assert!(path.contains(".sb"));
-            }
-            other => panic!("expected AlreadyInitialized, got: {other:?}"),
+        #[tokio::test]
+        async fn execute_creates_sb_dir_with_config_and_state_db() {
+            let space = tempfile::tempdir().unwrap();
+            let xdg = tempfile::tempdir().unwrap();
+            let _g = CwdGuard::set(space.path());
+            let _xg = XdgGuard::set(xdg.path());
+
+            // No token => skips ping. Pass URL with trailing slash to exercise normalization.
+            execute("https://example.com/".to_string(), None, true, false)
+                .await
+                .expect("init should succeed without token");
+
+            let sb_dir = space.path().join(".sb");
+            assert!(sb_dir.is_dir(), ".sb/ should exist");
+            assert!(sb_dir.join("state.db").is_file(), "state.db should exist");
+            let cfg = std::fs::read_to_string(sb_dir.join("config.toml")).unwrap();
+            assert!(
+                cfg.contains("https://example.com"),
+                "config.toml should contain server_url"
+            );
+            assert!(
+                !cfg.contains("https://example.com/"),
+                "trailing slash should be stripped before write"
+            );
         }
-    }
 
-    #[test]
-    fn state_db_created_with_wal_mode() {
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let sb_dir = dir.path().join(".sb");
-        std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
+        #[tokio::test]
+        async fn execute_rejects_when_sb_dir_already_exists() {
+            let space = tempfile::tempdir().unwrap();
+            std::fs::create_dir_all(space.path().join(".sb")).unwrap();
+            let xdg = tempfile::tempdir().unwrap();
+            let _g = CwdGuard::set(space.path());
+            let _xg = XdgGuard::set(xdg.path());
 
-        // Create state.db the same way init does
-        let db_path = sb_dir.join("state.db");
-        let conn = Connection::open(&db_path).expect("open state.db");
-        conn.execute_batch("PRAGMA journal_mode=WAL;")
-            .expect("set WAL mode");
-        drop(conn);
+            let err = execute("https://example.com".to_string(), None, true, false)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, SbError::AlreadyInitialized { .. }));
+        }
 
-        // Verify the DB can be opened and WAL mode is set
-        let conn2 = Connection::open(&db_path).expect("reopen state.db");
-        let mode: String = conn2
-            .query_row("PRAGMA journal_mode;", [], |row| row.get(0))
-            .expect("query journal_mode");
-        assert_eq!(mode, "wal", "state.db should use WAL journal mode");
-    }
+        #[tokio::test]
+        async fn execute_cleans_up_sb_dir_when_ping_fails() {
+            let space = tempfile::tempdir().unwrap();
+            let xdg = tempfile::tempdir().unwrap();
+            let _g = CwdGuard::set(space.path());
+            let _xg = XdgGuard::set(xdg.path());
 
-    #[test]
-    fn write_config_file_with_token_includes_token() {
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let sb_dir = dir.path().join(".sb");
-        std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
+            // Use unreachable URL; ping will fail with Network error, init_inner errors,
+            // and execute should remove the partial .sb/.
+            let err = execute(
+                "http://127.0.0.1:1".to_string(),
+                Some("tok".to_string()),
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, SbError::Network { .. }));
+            assert!(
+                !space.path().join(".sb").exists(),
+                ".sb/ should be cleaned up after init failure"
+            );
+        }
 
-        config::write_config_file(&sb_dir, "https://example.com", Some("testtoken"))
-            .expect("write_config_file");
+        #[tokio::test]
+        async fn execute_with_token_pings_server_and_succeeds() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.ping"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&server)
+                .await;
+            // probe_runtime_api answers; 503 makes detect_runtime_api return false.
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&server)
+                .await;
 
-        let content = std::fs::read_to_string(sb_dir.join("config.toml")).expect("read config");
-        assert!(content.contains("server_url"));
-        assert!(content.contains("https://example.com"));
-        assert!(content.contains("testtoken"));
-    }
+            let space = tempfile::tempdir().unwrap();
+            let xdg = tempfile::tempdir().unwrap();
+            let _g = CwdGuard::set(space.path());
+            let _xg = XdgGuard::set(xdg.path());
 
-    #[test]
-    fn write_config_file_without_token_omits_token_field() {
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let sb_dir = dir.path().join(".sb");
-        std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
+            execute(server.uri(), Some("tok".to_string()), true, false)
+                .await
+                .expect("init with reachable server should succeed");
 
-        config::write_config_file(&sb_dir, "https://example.com", None).expect("write_config_file");
-
-        let content = std::fs::read_to_string(sb_dir.join("config.toml")).expect("read config");
-        assert!(content.contains("server_url"));
-        assert!(!content.contains("token"));
+            let cfg =
+                std::fs::read_to_string(space.path().join(".sb").join("config.toml")).unwrap();
+            assert!(
+                cfg.contains("tok"),
+                "token should be persisted when passed as flag"
+            );
+        }
     }
 }

@@ -7,3 +7,6 @@ pub mod keychain;
 pub mod output;
 pub mod runtime;
 pub mod sync;
+
+#[cfg(test)]
+pub mod test_util;

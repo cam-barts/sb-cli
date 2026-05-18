@@ -795,7 +795,6 @@ pub async fn execute_resolve(
 
     Ok(())
 }
-
 /// List files currently in conflict.
 pub async fn execute_conflicts(format: &OutputFormat) -> SbResult<()> {
     let space_root = find_space_root()?;
@@ -853,4 +852,393 @@ pub async fn execute_conflicts(format: &OutputFormat) -> SbResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sync::scanner::{hash_file, mtime_ms};
+    use crate::test_util::{make_space, SbSpaceGuard};
+
+    // --- sync_action_parts ---
+
+    #[test]
+    fn sync_action_parts_maps_each_variant_to_action_name() {
+        let cases: Vec<(SyncAction, &str)> = vec![
+            (
+                SyncAction::Download {
+                    path: "a".into(),
+                    reason: "r".into(),
+                    remote_mtime: 0,
+                },
+                "download",
+            ),
+            (
+                SyncAction::Upload {
+                    path: "b".into(),
+                    reason: "r".into(),
+                },
+                "upload",
+            ),
+            (
+                SyncAction::DeleteLocal {
+                    path: "c".into(),
+                    reason: "r".into(),
+                },
+                "delete_local",
+            ),
+            (
+                SyncAction::DeleteRemote {
+                    path: "d".into(),
+                    reason: "r".into(),
+                },
+                "delete_remote",
+            ),
+            (
+                SyncAction::Conflict {
+                    path: "e".into(),
+                    reason: "r".into(),
+                },
+                "conflict",
+            ),
+            (
+                SyncAction::Skip {
+                    path: "f".into(),
+                    reason: "r".into(),
+                },
+                "skip",
+            ),
+        ];
+        for (action, expected) in cases {
+            let (name, _path, _reason) = sync_action_parts(&action);
+            assert_eq!(name, expected, "wrong name for {action:?}");
+        }
+    }
+
+    // --- format_dry_run_output ---
+
+    #[test]
+    fn format_dry_run_empty_actions_human_renders_nothing_to_sync() {
+        // Function writes to stdout — we can't capture it here, just ensure no error.
+        format_dry_run_output(&[], &OutputFormat::Human, false).unwrap();
+    }
+
+    #[test]
+    fn format_dry_run_empty_actions_json_renders_empty_array() {
+        format_dry_run_output(&[], &OutputFormat::Json, false).unwrap();
+    }
+
+    #[test]
+    fn format_dry_run_with_actions_succeeds_in_both_formats() {
+        let actions = vec![
+            SyncAction::Upload {
+                path: "a.md".into(),
+                reason: "new".into(),
+            },
+            SyncAction::Download {
+                path: "b.md".into(),
+                reason: "remote-new".into(),
+                remote_mtime: 1,
+            },
+        ];
+        format_dry_run_output(&actions, &OutputFormat::Human, false).unwrap();
+        format_dry_run_output(&actions, &OutputFormat::Json, false).unwrap();
+    }
+
+    // --- find_stash_file ---
+
+    #[test]
+    fn find_stash_file_returns_error_when_conflicts_dir_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let err = find_stash_file(tmp.path(), "Some.md").unwrap_err();
+        match err {
+            SbError::Filesystem { message, .. } => {
+                assert!(
+                    message.contains("conflicts directory does not exist"),
+                    "{message}"
+                )
+            }
+            other => panic!("expected Filesystem, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_stash_file_returns_error_when_no_match_in_existing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("conflicts")).unwrap();
+        let err = find_stash_file(tmp.path(), "Missing.md").unwrap_err();
+        match err {
+            SbError::Filesystem { message, .. } => assert!(message.contains("no stash file")),
+            other => panic!("expected Filesystem, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn find_stash_file_returns_only_match_when_one_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("conflicts")).unwrap();
+        let stash = tmp
+            .path()
+            .join("conflicts")
+            .join("Doc.2026-01-01T00-00-00Z.md");
+        std::fs::write(&stash, "stash body").unwrap();
+        let got = find_stash_file(tmp.path(), "Doc.md").unwrap();
+        assert_eq!(got, stash);
+    }
+
+    #[test]
+    fn find_stash_file_picks_most_recent_when_multiple_match() {
+        let tmp = tempfile::tempdir().unwrap();
+        let conflicts = tmp.path().join("conflicts");
+        std::fs::create_dir_all(&conflicts).unwrap();
+        let older = conflicts.join("Doc.2026-01-01T00-00-00Z.md");
+        let newer = conflicts.join("Doc.2026-01-02T00-00-00Z.md");
+        std::fs::write(&older, "older").unwrap();
+        // Sleep ensures mtime differs on filesystems with second precision.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&newer, "newer").unwrap();
+        let got = find_stash_file(tmp.path(), "Doc.md").unwrap();
+        // most-recent by mtime should win
+        let body = std::fs::read_to_string(&got).unwrap();
+        assert_eq!(body, "newer");
+    }
+
+    #[test]
+    fn find_stash_file_searches_nested_subdir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let nested = tmp.path().join("conflicts").join("Journal");
+        std::fs::create_dir_all(&nested).unwrap();
+        let stash = nested.join("2026-01-01.2026-01-02T00-00-00Z.md");
+        std::fs::write(&stash, "nested stash").unwrap();
+        let got = find_stash_file(tmp.path(), "Journal/2026-01-01.md").unwrap();
+        assert_eq!(got, stash);
+    }
+
+    #[test]
+    fn find_stash_file_excludes_original_filename() {
+        // A file with the same name as the original (no timestamp suffix) must not be returned.
+        let tmp = tempfile::tempdir().unwrap();
+        let conflicts = tmp.path().join("conflicts");
+        std::fs::create_dir_all(&conflicts).unwrap();
+        std::fs::write(conflicts.join("Doc.md"), "not a stash").unwrap();
+        let err = find_stash_file(tmp.path(), "Doc.md").unwrap_err();
+        assert!(matches!(err, SbError::Filesystem { .. }));
+    }
+
+    // --- compute_hash_and_mtime ---
+
+    #[tokio::test]
+    async fn compute_hash_and_mtime_returns_hash_matching_scanner() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("x.md");
+        std::fs::write(&file, b"hello world").unwrap();
+        let expected = hash_file(&file).unwrap();
+        let expected_mtime = std::fs::metadata(&file).map(|m| mtime_ms(&m)).unwrap();
+        let (h, m) = compute_hash_and_mtime(file).await.unwrap();
+        assert_eq!(h, expected);
+        assert_eq!(m, expected_mtime);
+    }
+
+    // --- execute_status (no-client path) ---
+
+    #[tokio::test]
+    async fn execute_status_with_empty_space_reports_zero_counts() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_status(&OutputFormat::Json).await.expect("status");
+    }
+
+    #[tokio::test]
+    async fn execute_status_counts_new_files() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("space")).unwrap();
+        std::fs::write(tmp.path().join("space").join("a.md"), "x").unwrap();
+        std::fs::write(tmp.path().join("space").join("b.md"), "y").unwrap();
+        execute_status(&OutputFormat::Human).await.expect("status");
+    }
+
+    // --- execute_conflicts (no-client path) ---
+
+    #[tokio::test]
+    async fn execute_conflicts_with_empty_db_renders_no_conflicts_human() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_conflicts(&OutputFormat::Human)
+            .await
+            .expect("conflicts");
+    }
+
+    #[tokio::test]
+    async fn execute_conflicts_with_empty_db_renders_empty_array_json() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        execute_conflicts(&OutputFormat::Json)
+            .await
+            .expect("conflicts json");
+    }
+
+    #[tokio::test]
+    async fn execute_conflicts_lists_conflict_rows_from_state_db() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        // Seed state.db with a conflict row.
+        let db_path = tmp.path().join(".sb").join("state.db");
+        let db = StateDb::open(&db_path).unwrap();
+        db.upsert_row(&crate::sync::SyncStateRow {
+            path: "Conflict.md".into(),
+            local_hash: Some("lh".into()),
+            remote_hash: Some("rh".into()),
+            remote_mtime: 1000,
+            local_mtime: 2000,
+            status: SyncStatus::Conflict,
+            conflict_at: 1700000000000,
+        })
+        .unwrap();
+        drop(db);
+        execute_conflicts(&OutputFormat::Human)
+            .await
+            .expect("conflicts");
+        execute_conflicts(&OutputFormat::Json)
+            .await
+            .expect("conflicts json");
+    }
+
+    // --- execute_resolve ---
+
+    #[tokio::test]
+    async fn execute_resolve_rejects_path_traversal() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        let err = execute_resolve(
+            None,
+            "../etc/passwd",
+            false,
+            false,
+            false,
+            false,
+            true,
+            &OutputFormat::Human,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            SbError::Usage(msg) => assert!(msg.contains("must not contain '..'")),
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_resolve_rejects_absolute_path() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        let err = execute_resolve(
+            None,
+            "/etc/shadow",
+            false,
+            false,
+            false,
+            false,
+            true,
+            &OutputFormat::Human,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            SbError::Usage(msg) => assert!(msg.contains("relative path")),
+            other => panic!("expected Usage, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_resolve_errors_when_stash_dir_missing() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        let err = execute_resolve(
+            None,
+            "Doc.md",
+            true,
+            false,
+            false,
+            true,
+            true,
+            &OutputFormat::Human,
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, SbError::Filesystem { .. }));
+    }
+
+    #[tokio::test]
+    async fn execute_resolve_errors_when_path_not_in_state_db() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        // Create stash file but no state.db row.
+        let conflicts = tmp.path().join(".sb").join("conflicts");
+        std::fs::create_dir_all(&conflicts).unwrap();
+        std::fs::write(conflicts.join("Doc.2026-01-01T00-00-00Z.md"), "stash").unwrap();
+        // Touch state.db so it exists
+        let _ = StateDb::open(&tmp.path().join(".sb").join("state.db")).unwrap();
+
+        let err = execute_resolve(
+            None,
+            "Doc.md",
+            true,
+            false,
+            false,
+            true,
+            true,
+            &OutputFormat::Human,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            SbError::Filesystem { message, .. } => {
+                assert!(message.contains("not tracked"), "{message}")
+            }
+            other => panic!("expected Filesystem, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn execute_resolve_errors_when_row_not_in_conflict_status() {
+        let tmp = make_space(Some("https://example.com"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        // Create stash file
+        let conflicts = tmp.path().join(".sb").join("conflicts");
+        std::fs::create_dir_all(&conflicts).unwrap();
+        std::fs::write(conflicts.join("Doc.2026-01-01T00-00-00Z.md"), "stash").unwrap();
+        // Seed row with Synced (not Conflict)
+        let db_path = tmp.path().join(".sb").join("state.db");
+        let db = StateDb::open(&db_path).unwrap();
+        db.upsert_row(&crate::sync::SyncStateRow {
+            path: "Doc.md".into(),
+            local_hash: Some("lh".into()),
+            remote_hash: Some("rh".into()),
+            remote_mtime: 1000,
+            local_mtime: 1000,
+            status: SyncStatus::Synced,
+            conflict_at: 0,
+        })
+        .unwrap();
+        drop(db);
+        let err = execute_resolve(
+            None,
+            "Doc.md",
+            true,
+            false,
+            false,
+            true,
+            true,
+            &OutputFormat::Human,
+        )
+        .await
+        .unwrap_err();
+        match err {
+            SbError::Filesystem { message, .. } => {
+                assert!(message.contains("not in conflict"), "{message}")
+            }
+            other => panic!("expected Filesystem, got: {other:?}"),
+        }
+    }
 }

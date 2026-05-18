@@ -180,4 +180,76 @@ mod tests {
             "filename must not contain ':' (Windows reserved)"
         );
     }
+
+    mod execute_tests {
+        use super::super::*;
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn execute_errors_when_json_format_with_dash_stdout_output() {
+            let tmp = make_space(Some("http://127.0.0.1:1"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute(None, Some("-"), &OutputFormat::Json, true, false)
+                .await
+                .unwrap_err();
+            match err {
+                SbError::Usage(msg) => {
+                    assert!(msg.contains("incompatible"), "got: {msg}")
+                }
+                other => panic!("expected Usage, got: {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn execute_503_from_screenshot_becomes_runtime_unavailable() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.runtime/screenshot"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let out = tmp.path().join("shot.png");
+            let err = execute(
+                None,
+                Some(out.to_str().unwrap()),
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert!(format!("{err}").contains("Runtime API not available"));
+        }
+
+        #[tokio::test]
+        async fn execute_writes_png_to_file_and_emits_json_envelope() {
+            let server = MockServer::start().await;
+            let png_bytes = b"\x89PNG\r\n\x1a\nfake-body";
+            Mock::given(method("GET"))
+                .and(path("/.runtime/screenshot"))
+                .respond_with(ResponseTemplate::new(200).set_body_bytes(png_bytes.to_vec()))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let out = tmp.path().join("shot.png");
+
+            execute(
+                None,
+                Some(out.to_str().unwrap()),
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("succeed");
+
+            let written = std::fs::read(&out).unwrap();
+            assert_eq!(written.as_slice(), png_bytes);
+        }
+    }
 }

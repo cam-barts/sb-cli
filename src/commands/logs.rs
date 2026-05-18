@@ -236,6 +236,18 @@ mod tests {
     }
 
     #[test]
+    fn filter_and_sort_returns_empty_when_after_high_water() {
+        // High-water exceeds every entry's timestamp; result must be empty.
+        let logs = RuntimeLogs {
+            client_logs: vec![entry("a", Some("log"), Some(5))],
+            server_logs: vec![entry("b", Some("log"), Some(10))],
+            extra: Default::default(),
+        };
+        let sorted = filter_and_sort(&logs, LogSource::Both, Some(100));
+        assert!(sorted.is_empty());
+    }
+
+    #[test]
     fn filter_and_sort_drops_timestampless_entries_in_follow_mode() {
         let logs = RuntimeLogs {
             client_logs: vec![
@@ -248,5 +260,87 @@ mod tests {
         let sorted = filter_and_sort(&logs, LogSource::Both, Some(50));
         assert_eq!(sorted.len(), 1);
         assert_eq!(sorted[0].entry.message, "ts");
+    }
+
+    mod execute_tests {
+        use super::super::*;
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        #[tokio::test]
+        async fn execute_503_from_runtime_becomes_runtime_unavailable() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.runtime/logs"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute(
+                None,
+                false,
+                100,
+                LogSource::Both,
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert!(format!("{err}").contains("Runtime API not available"));
+        }
+
+        #[tokio::test]
+        async fn execute_renders_entries_and_returns_when_not_following() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.runtime/logs"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    r#"{"client_logs":[{"level":"log","message":"hi","timestamp":1}],"server_logs":[]}"#,
+                ))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute(
+                None,
+                false,
+                100,
+                LogSource::Both,
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("non-follow path should return after one fetch");
+        }
+
+        #[tokio::test]
+        async fn execute_no_entries_human_format_prints_friendly_message() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.runtime/logs"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(r#"{"client_logs":[],"server_logs":[]}"#),
+                )
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute(
+                None,
+                false,
+                100,
+                LogSource::Both,
+                &OutputFormat::Human,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+        }
     }
 }

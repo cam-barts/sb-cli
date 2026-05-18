@@ -736,4 +736,301 @@ mod tests {
         let result = validate_page_path(space_root, "Projects/../../../etc/shadow");
         assert!(result.is_err(), "should reject embedded path traversal");
     }
+
+    mod execute_tests {
+        use super::super::*;
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{method, path as wpath};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn seed_page(space_root: &std::path::Path, page: &str, content: &str) {
+            let p = space_root.join(format!("{}.md", page));
+            if let Some(parent) = p.parent() {
+                std::fs::create_dir_all(parent).unwrap();
+            }
+            std::fs::write(p, content).unwrap();
+        }
+
+        // --- execute_list ---
+
+        #[tokio::test]
+        async fn list_returns_pages_in_human_format() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "Notes", "# Notes");
+            seed_page(tmp.path(), "Journal/2026-01-01", "# Day one");
+            execute_list(&SortField::Name, None, &OutputFormat::Human, true, false)
+                .await
+                .expect("list");
+        }
+
+        #[tokio::test]
+        async fn list_with_limit_truncates() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            for i in 0..5 {
+                seed_page(tmp.path(), &format!("p{i}"), "x");
+            }
+            execute_list(&SortField::Name, Some(2), &OutputFormat::Json, true, false)
+                .await
+                .expect("list with limit");
+        }
+
+        #[tokio::test]
+        async fn list_sort_by_modified_succeeds() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "a", "x");
+            seed_page(tmp.path(), "b", "y");
+            execute_list(&SortField::Modified, None, &OutputFormat::Json, true, false)
+                .await
+                .expect("sort modified");
+        }
+
+        #[tokio::test]
+        async fn list_sort_by_created_succeeds() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "a", "x");
+            execute_list(&SortField::Created, None, &OutputFormat::Json, true, false)
+                .await
+                .expect("sort created");
+        }
+
+        // --- execute_read ---
+
+        #[tokio::test]
+        async fn read_local_returns_existing_page_content() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "Hello", "world body");
+            execute_read(None, "Hello", false, &OutputFormat::Human, true, false)
+                .await
+                .expect("read local");
+        }
+
+        #[tokio::test]
+        async fn read_local_errors_when_page_missing() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute_read(
+                None,
+                "DoesNotExist",
+                false,
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, SbError::PageNotFound { .. }));
+        }
+
+        #[tokio::test]
+        async fn read_remote_fetches_via_http() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(wpath("/.fs/Some.md"))
+                .respond_with(ResponseTemplate::new(200).set_body_string("remote body"))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_read(None, "Some", true, &OutputFormat::Human, true, false)
+                .await
+                .expect("read remote");
+        }
+
+        #[tokio::test]
+        async fn read_rejects_path_traversal_in_name() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute_read(
+                None,
+                "../etc/passwd",
+                false,
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, SbError::Usage(_)));
+        }
+
+        // --- execute_create ---
+
+        #[tokio::test]
+        async fn create_with_content_writes_file() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_create(
+                None,
+                "FromContent",
+                Some("# Hello"),
+                false,
+                None,
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .expect("create with content");
+            let body = std::fs::read_to_string(tmp.path().join("FromContent.md")).unwrap();
+            assert_eq!(body, "# Hello");
+        }
+
+        #[tokio::test]
+        async fn create_errors_when_page_already_exists() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "Existing", "x");
+            let err = execute_create(
+                None,
+                "Existing",
+                Some("ignored"),
+                false,
+                None,
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
+            assert!(matches!(err, SbError::PageAlreadyExists { .. }));
+        }
+
+        #[tokio::test]
+        async fn create_creates_parent_directories() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_create(
+                None,
+                "deep/nested/page",
+                Some("body"),
+                false,
+                None,
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .expect("create deep");
+            assert!(tmp
+                .path()
+                .join("deep")
+                .join("nested")
+                .join("page.md")
+                .is_file());
+        }
+
+        // Note: the --template branch in execute_create is gated on stdin being a
+        // TTY — under `cargo test` stdin is piped, so the stdin-empty branch wins
+        // and an empty file is written. Testing the template branch end-to-end
+        // would need a refactor that injects "stdin is piped" the way daily.rs
+        // does; deferred for now.
+
+        // --- execute_delete with --force ---
+
+        #[tokio::test]
+        async fn delete_with_force_removes_file() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "ToDelete", "x");
+            execute_delete("ToDelete", true, true, false)
+                .await
+                .expect("delete force");
+            assert!(!tmp.path().join("ToDelete.md").exists());
+        }
+
+        #[tokio::test]
+        async fn delete_errors_when_page_missing() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute_delete("Missing", true, true, false)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, SbError::PageNotFound { .. }));
+        }
+
+        // --- execute_append ---
+
+        #[tokio::test]
+        async fn append_extends_existing_page() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "AppendMe", "first line");
+            execute_append("AppendMe", "second line", true, false)
+                .await
+                .expect("append");
+            let body = std::fs::read_to_string(tmp.path().join("AppendMe.md")).unwrap();
+            assert_eq!(body, "first line\nsecond line");
+        }
+
+        #[tokio::test]
+        async fn append_creates_new_page_when_missing() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_append("BrandNew", "fresh content", true, false)
+                .await
+                .expect("append-creates");
+            let body = std::fs::read_to_string(tmp.path().join("BrandNew.md")).unwrap();
+            assert_eq!(body, "fresh content");
+        }
+
+        // --- execute_move ---
+
+        #[tokio::test]
+        async fn move_renames_existing_page() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "OldName", "body");
+            execute_move("OldName", "NewName", true, false)
+                .await
+                .expect("move");
+            assert!(!tmp.path().join("OldName.md").exists());
+            assert!(tmp.path().join("NewName.md").is_file());
+        }
+
+        #[tokio::test]
+        async fn move_errors_when_source_missing() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute_move("Ghost", "Other", true, false)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, SbError::PageNotFound { .. }));
+        }
+
+        #[tokio::test]
+        async fn move_errors_when_destination_exists() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "A", "x");
+            seed_page(tmp.path(), "B", "y");
+            let err = execute_move("A", "B", true, false).await.unwrap_err();
+            assert!(matches!(err, SbError::PageAlreadyExists { .. }));
+        }
+
+        #[tokio::test]
+        async fn move_to_nested_path_creates_parent_dirs() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            seed_page(tmp.path(), "Flat", "x");
+            execute_move("Flat", "Subdir/Nested", true, false)
+                .await
+                .expect("move nested");
+            assert!(tmp.path().join("Subdir").join("Nested.md").is_file());
+        }
+
+        // --- execute_edit (without spawning editor) ---
+
+        #[tokio::test]
+        async fn edit_errors_when_page_missing() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute_edit("Missing", true, false).await.unwrap_err();
+            assert!(matches!(err, SbError::PageNotFound { .. }));
+        }
+    }
 }

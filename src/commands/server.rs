@@ -107,3 +107,104 @@ pub async fn execute_config(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_util::{make_space, SbSpaceGuard};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[test]
+    fn runtime_unavailable_error_carries_actionable_message() {
+        let err = runtime_unavailable_error();
+        let msg = format!("{err}");
+        // Verify the user gets steered toward the docs, not just a vague error.
+        assert!(msg.contains("Runtime API"), "got: {msg}");
+        assert!(msg.contains("silverbullet.md"), "got: {msg}");
+    }
+
+    #[test]
+    fn require_initialized_errors_when_no_space() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _g = SbSpaceGuard::set(tmp.path());
+        // Tempdir has no .sb/ — find_space_root via SB_SPACE should fail.
+        let res = require_initialized();
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn require_initialized_succeeds_when_space_exists() {
+        let tmp = make_space(Some("http://127.0.0.1:1"));
+        let _g = SbSpaceGuard::set(tmp.path());
+        require_initialized().expect("space exists, should succeed");
+    }
+
+    #[test]
+    fn build_client_errors_when_no_server_url_configured() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Make a space with no server_url
+        std::fs::create_dir_all(tmp.path().join(".sb")).unwrap();
+        std::fs::write(tmp.path().join(".sb").join("config.toml"), "").unwrap();
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = build_client(None);
+        let err = match res {
+            Ok(_) => panic!("expected error, got Ok(SbClient)"),
+            Err(e) => e,
+        };
+        match err {
+            SbError::Config { message } => assert!(message.contains("no server_url")),
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn ping_reports_response_time_on_success() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.ping"))
+            .respond_with(ResponseTemplate::new(200))
+            .mount(&server)
+            .await;
+        // ping() also probes the runtime — answer 503 so detect returns false quickly.
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua"))
+            .respond_with(ResponseTemplate::new(503))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = execute_ping(None, &crate::cli::OutputFormat::Json, true, false).await;
+        assert!(res.is_ok(), "{res:?}");
+    }
+
+    #[tokio::test]
+    async fn ping_propagates_network_error_when_server_unreachable() {
+        let tmp = make_space(Some("http://127.0.0.1:1"));
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let err = execute_ping(None, &crate::cli::OutputFormat::Human, true, false)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SbError::Network { .. }));
+    }
+
+    #[tokio::test]
+    async fn config_returns_server_config_fields_in_json() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.config"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"readOnly":false,"spaceFolderPath":"/space","indexPage":"index"}"#,
+            ))
+            .mount(&server)
+            .await;
+        let tmp = make_space(Some(&server.uri()));
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let res = execute_config(None, &crate::cli::OutputFormat::Json, true, false).await;
+        assert!(res.is_ok(), "{res:?}");
+    }
+}

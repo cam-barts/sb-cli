@@ -198,6 +198,26 @@ available = false          # Runtime API available on server (default: false)
 
 Every config field has a `SB_` environment variable. `sync.workers` maps to `SB_SYNC_WORKERS`, and so on.
 
+## Testing & Coverage
+
+Run the full test suite locally:
+
+```sh
+cargo test
+```
+
+Generate a coverage report (requires `cargo-llvm-cov`):
+
+```sh
+cargo install cargo-llvm-cov
+cargo llvm-cov --lib --html  # writes target/llvm-cov/html/index.html
+```
+
+CI enforces a region-coverage floor of **80%** on every push and pull request
+(`coverage` job in `.github/workflows/ci.yml`). Drops below the floor fail the
+build. The threshold is intentionally a ratchet — raise it (in its own PR) when
+the repo holds a new sustained high; don't lower it without an explicit waiver.
+
 ## Attribution
 
 Built for [SilverBullet](https://silverbullet.md), created by [Zef Hemel](https://github.com/zefhemel).

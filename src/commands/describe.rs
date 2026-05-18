@@ -300,4 +300,103 @@ mod tests {
         assert_eq!(summary.sampled, 0);
         assert!(summary.fields.is_empty());
     }
+
+    #[test]
+    fn from_lua_result_field_types_are_sorted_by_count_desc_then_name() {
+        // Tie-breaking matters for stable output: same count → alphabetical type name.
+        let value = serde_json::json!({
+            "sampled": 4,
+            "fields": {
+                "x": { "string": 2, "number": 2, "boolean": 1 }
+            }
+        });
+        let summary = TagSummary::from_lua_result("t", &value);
+        let types = &summary.fields["x"];
+        assert_eq!(types[0], ("number".into(), 2));
+        assert_eq!(types[1], ("string".into(), 2));
+        assert_eq!(types[2], ("boolean".into(), 1));
+    }
+
+    #[test]
+    fn from_lua_result_missing_keys_yield_zero_sampled_no_fields() {
+        let summary = TagSummary::from_lua_result("t", &serde_json::Value::Null);
+        assert_eq!(summary.sampled, 0);
+        assert!(summary.fields.is_empty());
+    }
+
+    mod execute_tests {
+        use super::super::*;
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn enable_runtime(space_root: &std::path::Path) {
+            crate::config::update_config_value(
+                &space_root.join(".sb"),
+                "runtime",
+                "available",
+                true,
+            )
+            .unwrap();
+        }
+
+        #[tokio::test]
+        async fn execute_errors_on_invalid_tag() {
+            let tmp = make_space(Some("http://127.0.0.1:1"));
+            enable_runtime(tmp.path());
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute(None, "bad tag", 10, &OutputFormat::Json, true, false)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, SbError::Usage(_)));
+        }
+
+        #[tokio::test]
+        async fn execute_errors_when_runtime_disabled() {
+            let tmp = make_space(Some("http://127.0.0.1:1"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = execute(None, "task", 10, &OutputFormat::Json, true, false)
+                .await
+                .unwrap_err();
+            assert!(format!("{err}").contains("Runtime API not available"));
+        }
+
+        #[tokio::test]
+        async fn execute_succeeds_with_valid_lua_response() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua_script"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    r#"{"result":{"tag":"task","sampled":2,"fields":{"name":{"string":2}}}}"#,
+                ))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            enable_runtime(tmp.path());
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute(None, "task", 100, &OutputFormat::Json, true, false)
+                .await
+                .expect("succeed");
+        }
+
+        #[tokio::test]
+        async fn execute_zero_sampled_human_format_short_circuits() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua_script"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(r#"{"result":{"tag":"missing","sampled":0,"fields":{}}}"#),
+                )
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            enable_runtime(tmp.path());
+            let _g = SbSpaceGuard::set(tmp.path());
+            // Should succeed (early-return path), not error.
+            execute(None, "missing", 100, &OutputFormat::Human, false, false)
+                .await
+                .unwrap();
+        }
+    }
 }
