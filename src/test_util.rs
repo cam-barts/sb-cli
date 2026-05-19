@@ -17,11 +17,18 @@ use std::sync::{Mutex, MutexGuard};
 pub static SB_SPACE_MUTEX: Mutex<()> = Mutex::new(());
 
 /// RAII guard that:
-/// - sets `SB_SPACE` to the tempdir for the duration of the test, restoring it on drop
+/// - sets `SB_SPACE` to the tempdir for the duration of the test
+/// - points `XDG_CONFIG_HOME` at a guaranteed-empty temp dir so the developer's
+///   real `~/.config/sb/config.toml` doesn't leak into ResolvedConfig
 /// - holds the cross-test mutex
+///
+/// Restores both env vars on drop. Tests that want to exercise XDG content
+/// should pair this with `XdgGuard` (which is applied AFTER this one, so it wins).
 pub struct SbSpaceGuard {
     _lock: MutexGuard<'static, ()>,
-    prev: Option<String>,
+    _xdg_tmp: tempfile::TempDir,
+    prev_sb_space: Option<String>,
+    prev_xdg: Option<String>,
 }
 
 impl SbSpaceGuard {
@@ -30,17 +37,30 @@ impl SbSpaceGuard {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let prev = std::env::var("SB_SPACE").ok();
+        let prev_sb_space = std::env::var("SB_SPACE").ok();
         std::env::set_var("SB_SPACE", path);
-        Self { _lock: lock, prev }
+        // Isolate XDG so ResolvedConfig::load_from doesn't read the dev's real config.
+        let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+        let xdg_tmp = tempfile::tempdir().expect("create xdg isolate dir");
+        std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path());
+        Self {
+            _lock: lock,
+            _xdg_tmp: xdg_tmp,
+            prev_sb_space,
+            prev_xdg,
+        }
     }
 }
 
 impl Drop for SbSpaceGuard {
     fn drop(&mut self) {
-        match &self.prev {
+        match &self.prev_sb_space {
             Some(v) => std::env::set_var("SB_SPACE", v),
             None => std::env::remove_var("SB_SPACE"),
+        }
+        match &self.prev_xdg {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
         }
     }
 }

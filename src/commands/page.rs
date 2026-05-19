@@ -3,7 +3,6 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::cli::{OutputFormat, SortField};
 use crate::commands::server::build_client;
-use crate::config;
 use crate::error::{SbError, SbResult};
 use crate::output;
 
@@ -52,7 +51,7 @@ pub fn find_space_root() -> SbResult<PathBuf> {
     // 1. SB_SPACE env override
     if let Ok(val) = std::env::var("SB_SPACE") {
         let expanded = crate::config::expand_tilde(&val)?;
-        if !expanded.join(".sb").join("config.toml").is_file() {
+        if !is_space_root(&expanded) {
             return Err(SbError::SpaceNotFound {
                 configured_path: expanded.display().to_string(),
                 via: "SB_SPACE environment variable".to_string(),
@@ -71,7 +70,7 @@ pub fn find_space_root() -> SbResult<PathBuf> {
     let user_config = crate::config::load_user_config()?;
     if let Some(ref path_str) = user_config.space {
         let expanded = crate::config::expand_tilde(path_str)?;
-        if !expanded.join(".sb").join("config.toml").is_file() {
+        if !is_space_root(&expanded) {
             let xdg_path = crate::config::xdg_config_dir()
                 .map(|d| d.join("config.toml").display().to_string())
                 .unwrap_or_else(|_| "~/.config/sb/config.toml".to_string());
@@ -85,17 +84,30 @@ pub fn find_space_root() -> SbResult<PathBuf> {
     Err(SbError::NotInitialized)
 }
 
+/// A directory is a space root if it contains a `.sb/` subdirectory.
+///
+/// We deliberately don't require `.sb/config.toml` — it's allowed to live
+/// only in the XDG user config now. `.sb/state.db` is what makes a space a
+/// space; the directory's existence is sufficient evidence the space was
+/// initialized.
+fn is_space_root(dir: &Path) -> bool {
+    dir.join(".sb").is_dir()
+}
+
 /// Find space root starting from a specific directory (testable variant).
+///
+/// Walks up looking for a `.sb/` directory. Either a per-space `config.toml`
+/// or just a bare `.sb/` (with config delegated to the XDG file) is accepted.
 pub fn find_space_root_from(start: &Path) -> SbResult<PathBuf> {
-    let config_path = config::find_config_file(start).ok_or(SbError::NotInitialized)?;
-    // config_path is .sb/config.toml -> parent() is .sb/ -> parent() is space root
-    let space_root = config_path
-        .parent()
-        .and_then(|p| p.parent())
-        .ok_or_else(|| SbError::Config {
-            message: "unexpected config path structure".to_string(),
-        })?;
-    Ok(space_root.to_path_buf())
+    let mut current = start.to_path_buf();
+    loop {
+        if is_space_root(&current) {
+            return Ok(current);
+        }
+        if !current.pop() {
+            return Err(SbError::NotInitialized);
+        }
+    }
 }
 
 /// A single page entry for listing.

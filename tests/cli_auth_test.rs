@@ -20,6 +20,7 @@ async fn auth_set_with_flag_updates_config() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["auth", "set", "--token", "newtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -48,6 +49,7 @@ async fn auth_set_piped_stdin() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["auth", "set"])
         .current_dir(temp_dir.path())
         .write_stdin("stdintoken\n")
@@ -73,6 +75,7 @@ async fn auth_set_uninitialized_fails() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["auth", "set", "--token", "t"])
         .current_dir(temp_dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())

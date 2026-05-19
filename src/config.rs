@@ -60,7 +60,10 @@ pub struct RuntimeConfigFile {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigSource {
     Default,
+    /// Value came from the per-space `<space>/.sb/config.toml`.
     File,
+    /// Value came from the user-level XDG config `~/.config/sb/config.toml`.
+    UserFile,
     Env(String),
     /// Used when a CLI flag overrides this config value (reserved for future use).
     #[allow(dead_code)]
@@ -72,6 +75,7 @@ impl std::fmt::Display for ConfigSource {
         match self {
             ConfigSource::Default => write!(f, "default"),
             ConfigSource::File => write!(f, "config"),
+            ConfigSource::UserFile => write!(f, "user config"),
             ConfigSource::Env(name) => write!(f, "env: {name}"),
             ConfigSource::Flag(name) => write!(f, "flag: {name}"),
         }
@@ -163,7 +167,7 @@ fn parse_env_vec(val: &str) -> Vec<String> {
 }
 
 impl ResolvedConfig {
-    /// Load configuration by resolving: defaults <- config file <- env vars.
+    /// Load configuration by resolving: defaults <- XDG config <- per-space config <- env vars.
     ///
     /// CLI flag overrides are applied separately by the caller since they
     /// depend on parsed CLI arguments.
@@ -175,10 +179,13 @@ impl ResolvedConfig {
     }
 
     /// Load configuration starting from a specific directory.
+    ///
+    /// Resolves with precedence: env > per-space config > XDG user config > defaults.
+    /// Loading the per-space config is best-effort (defaults are used if missing).
     pub fn load_from(start_dir: &Path) -> SbResult<Self> {
-        // Step 1: Try to find and parse config file
+        // Step 1: Try to find and parse the per-space config file
         let config_file = if let Some(path) = find_config_file(start_dir) {
-            debug!("config file found: {}", path.display());
+            debug!("per-space config file found: {}", path.display());
             let content = std::fs::read_to_string(&path).map_err(|e| SbError::Config {
                 message: format!("cannot read {}: {e}", path.display()),
             })?;
@@ -186,46 +193,81 @@ impl ResolvedConfig {
                 message: format!("invalid config at {}: {e}", path.display()),
             })?
         } else {
-            debug!("no config file found, using defaults");
+            debug!("no per-space config file found");
             ConfigFile::default()
         };
 
-        // Step 2: Resolve each field with precedence: env > file > default
-        let server_url = Self::resolve_optional_string("SB_SERVER_URL", config_file.server_url);
-        let token = Self::resolve_optional_string("SB_TOKEN", config_file.token);
+        // Step 2: Load the XDG user config (acts as a fallback when per-space
+        // doesn't define a field). Reading errors are propagated; absence is
+        // treated as default.
+        let user_config = load_user_config()?;
 
-        let sync_dir =
-            Self::resolve_string("SB_SYNC_DIR", config_file.sync.dir, "space".to_string());
-        let sync_workers = Self::resolve_u32("SB_SYNC_WORKERS", config_file.sync.workers, 4)?;
-        let sync_attachments =
-            Self::resolve_bool("SB_SYNC_ATTACHMENTS", config_file.sync.attachments, false)?;
+        // Step 3: Resolve each field with precedence: env > per-space > XDG > default
+        let server_url = Self::resolve_optional_string(
+            "SB_SERVER_URL",
+            config_file.server_url,
+            user_config.server_url,
+        );
+        let token = Self::resolve_optional_string("SB_TOKEN", config_file.token, user_config.token);
+
+        let sync_dir = Self::resolve_string(
+            "SB_SYNC_DIR",
+            config_file.sync.dir,
+            user_config.sync.dir,
+            "space".to_string(),
+        );
+        let sync_workers = Self::resolve_u32(
+            "SB_SYNC_WORKERS",
+            config_file.sync.workers,
+            user_config.sync.workers,
+            4,
+        )?;
+        let sync_attachments = Self::resolve_bool(
+            "SB_SYNC_ATTACHMENTS",
+            config_file.sync.attachments,
+            user_config.sync.attachments,
+            false,
+        )?;
         let sync_exclude = Self::resolve_vec(
             "SB_SYNC_EXCLUDE",
             config_file.sync.exclude,
+            user_config.sync.exclude,
             vec!["_plug/*".to_string()],
         );
-        let sync_include = Self::resolve_vec("SB_SYNC_INCLUDE", config_file.sync.include, vec![]);
+        let sync_include = Self::resolve_vec(
+            "SB_SYNC_INCLUDE",
+            config_file.sync.include,
+            user_config.sync.include,
+            vec![],
+        );
 
         let daily_path = Self::resolve_string(
             "SB_DAILY_PATH",
             config_file.daily.path,
+            user_config.daily.path,
             "Journal/{{date}}".to_string(),
         );
         let daily_date_format = Self::resolve_string(
             "SB_DAILY_DATE_FORMAT",
             config_file.daily.date_format,
+            user_config.daily.date_format,
             "%Y-%m-%d".to_string(),
         );
-        let daily_template =
-            Self::resolve_optional_string("SB_DAILY_TEMPLATE", config_file.daily.template);
+        let daily_template = Self::resolve_optional_string(
+            "SB_DAILY_TEMPLATE",
+            config_file.daily.template,
+            user_config.daily.template,
+        );
         let daily_time_format = Self::resolve_string(
             "SB_DAILY_TIME_FORMAT",
             config_file.daily.time_format,
+            user_config.daily.time_format,
             "%H:%M".to_string(),
         );
         let daily_bullet_style = Self::resolve_string(
             "SB_DAILY_BULLET_STYLE",
             config_file.daily.bullet_style,
+            user_config.daily.bullet_style,
             "*".to_string(),
         );
         if daily_bullet_style.value != "*" && daily_bullet_style.value != "-" {
@@ -237,12 +279,24 @@ impl ResolvedConfig {
             });
         }
 
-        let shell_enabled =
-            Self::resolve_bool("SB_SHELL_ENABLED", config_file.shell.enabled, false)?;
-        let auth_keychain =
-            Self::resolve_bool("SB_AUTH_KEYCHAIN", config_file.auth.keychain, false)?;
-        let runtime_available =
-            Self::resolve_bool("SB_RUNTIME_AVAILABLE", config_file.runtime.available, false)?;
+        let shell_enabled = Self::resolve_bool(
+            "SB_SHELL_ENABLED",
+            config_file.shell.enabled,
+            user_config.shell.enabled,
+            false,
+        )?;
+        let auth_keychain = Self::resolve_bool(
+            "SB_AUTH_KEYCHAIN",
+            config_file.auth.keychain,
+            user_config.auth.keychain,
+            false,
+        )?;
+        let runtime_available = Self::resolve_bool(
+            "SB_RUNTIME_AVAILABLE",
+            config_file.runtime.available,
+            user_config.runtime.available,
+            false,
+        )?;
 
         Ok(ResolvedConfig {
             server_url,
@@ -266,11 +320,14 @@ impl ResolvedConfig {
     fn resolve_optional_string(
         env_key: &str,
         file_val: Option<String>,
+        xdg_val: Option<String>,
     ) -> ResolvedValue<Option<String>> {
         if let Ok(val) = std::env::var(env_key) {
             ResolvedValue::new(Some(val), ConfigSource::Env(env_key.to_string()))
         } else if let Some(val) = file_val {
             ResolvedValue::new(Some(val), ConfigSource::File)
+        } else if let Some(val) = xdg_val {
+            ResolvedValue::new(Some(val), ConfigSource::UserFile)
         } else {
             ResolvedValue::new(None, ConfigSource::Default)
         }
@@ -279,12 +336,15 @@ impl ResolvedConfig {
     fn resolve_string(
         env_key: &str,
         file_val: Option<String>,
+        xdg_val: Option<String>,
         default: String,
     ) -> ResolvedValue<String> {
         if let Ok(val) = std::env::var(env_key) {
             ResolvedValue::new(val, ConfigSource::Env(env_key.to_string()))
         } else if let Some(val) = file_val {
             ResolvedValue::new(val, ConfigSource::File)
+        } else if let Some(val) = xdg_val {
+            ResolvedValue::new(val, ConfigSource::UserFile)
         } else {
             ResolvedValue::new(default, ConfigSource::Default)
         }
@@ -293,6 +353,7 @@ impl ResolvedConfig {
     fn resolve_u32(
         env_key: &str,
         file_val: Option<u32>,
+        xdg_val: Option<u32>,
         default: u32,
     ) -> SbResult<ResolvedValue<u32>> {
         if let Ok(val) = std::env::var(env_key) {
@@ -305,6 +366,8 @@ impl ResolvedConfig {
             ))
         } else if let Some(val) = file_val {
             Ok(ResolvedValue::new(val, ConfigSource::File))
+        } else if let Some(val) = xdg_val {
+            Ok(ResolvedValue::new(val, ConfigSource::UserFile))
         } else {
             Ok(ResolvedValue::new(default, ConfigSource::Default))
         }
@@ -313,6 +376,7 @@ impl ResolvedConfig {
     fn resolve_bool(
         env_key: &str,
         file_val: Option<bool>,
+        xdg_val: Option<bool>,
         default: bool,
     ) -> SbResult<ResolvedValue<bool>> {
         if let Ok(val) = std::env::var(env_key) {
@@ -325,6 +389,8 @@ impl ResolvedConfig {
             ))
         } else if let Some(val) = file_val {
             Ok(ResolvedValue::new(val, ConfigSource::File))
+        } else if let Some(val) = xdg_val {
+            Ok(ResolvedValue::new(val, ConfigSource::UserFile))
         } else {
             Ok(ResolvedValue::new(default, ConfigSource::Default))
         }
@@ -333,19 +399,24 @@ impl ResolvedConfig {
     fn resolve_vec(
         env_key: &str,
         file_val: Option<Vec<String>>,
+        xdg_val: Option<Vec<String>>,
         default: Vec<String>,
     ) -> ResolvedValue<Vec<String>> {
         if let Ok(val) = std::env::var(env_key) {
             ResolvedValue::new(parse_env_vec(&val), ConfigSource::Env(env_key.to_string()))
         } else if let Some(val) = file_val {
             ResolvedValue::new(val, ConfigSource::File)
+        } else if let Some(val) = xdg_val {
+            ResolvedValue::new(val, ConfigSource::UserFile)
         } else {
             ResolvedValue::new(default, ConfigSource::Default)
         }
     }
 }
 
-/// Resolve the auth token with precedence: CLI flag > env > keychain > config file.
+/// Resolve the auth token.
+///
+/// Precedence: CLI flag > env > keychain > per-space config > XDG user config.
 ///
 /// The keychain lookup is only attempted when `config.auth_keychain.value` is true
 /// and a server_url is available (needed as keychain entry identifier).
@@ -371,7 +442,7 @@ pub fn resolve_token(cli_flag: Option<&str>, config: &ResolvedConfig) -> SbResul
         if let Some(ref server_url) = config.server_url.value {
             match crate::keychain::get_token(server_url) {
                 Ok(Some(token)) if !token.is_empty() => return Ok(token),
-                Ok(_) => {} // No entry or empty -- fall through to config file
+                Ok(_) => {} // No entry or empty -- fall through to file sources
                 Err(e) => {
                     tracing::debug!("keychain lookup failed, falling through: {e}");
                 }
@@ -379,9 +450,15 @@ pub fn resolve_token(cli_flag: Option<&str>, config: &ResolvedConfig) -> SbResul
         }
     }
 
-    // 4. Config file token
+    // 4. Per-space config file OR XDG user config file. The resolver in
+    // load_from already picked the higher-priority of the two for us.
     if let Some(ref t) = config.token.value {
-        if !t.is_empty() && matches!(config.token.source, ConfigSource::File) {
+        if !t.is_empty()
+            && matches!(
+                config.token.source,
+                ConfigSource::File | ConfigSource::UserFile
+            )
+        {
             return Ok(t.clone());
         }
     }
@@ -395,6 +472,7 @@ pub fn resolve_token(cli_flag: Option<&str>, config: &ResolvedConfig) -> SbResul
         checked.push("OS keychain".into());
     }
     checked.push(".sb/config.toml token field".into());
+    checked.push("~/.config/sb/config.toml token field".into());
 
     Err(SbError::TokenNotFound { checked })
 }
@@ -486,9 +564,25 @@ pub fn expand_tilde(path: &str) -> SbResult<PathBuf> {
 }
 
 /// Raw structure for the user-level XDG config at `~/.config/sb/config.toml`.
+///
+/// Mirrors `ConfigFile` plus a `space` pointer. Any field set here is used as a
+/// fallback when the per-space `.sb/config.toml` doesn't define it. Per-space
+/// values always override these.
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct UserConfig {
     pub space: Option<String>,
+    pub server_url: Option<String>,
+    pub token: Option<String>,
+    #[serde(default)]
+    pub sync: SyncConfigFile,
+    #[serde(default)]
+    pub daily: DailyConfigFile,
+    #[serde(default)]
+    pub shell: ShellConfigFile,
+    #[serde(default)]
+    pub auth: AuthConfigFile,
+    #[serde(default)]
+    pub runtime: RuntimeConfigFile,
 }
 
 /// Load the user-level XDG config. Returns defaults if the file does not exist.
@@ -578,6 +672,44 @@ mod tests {
     /// Mutex to serialize tests that modify process-global env vars.
     static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
+    /// Holds the env mutex AND points `XDG_CONFIG_HOME` at a guaranteed-empty
+    /// temp dir for the duration of the test. Restores both on drop.
+    ///
+    /// `load_from` now consults the XDG user config as a fallback layer.
+    /// Without isolation, tests would silently read the developer's real
+    /// `~/.config/sb/config.toml` and produce nondeterministic results.
+    struct EnvTestGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        _xdg_tmp: tempfile::TempDir,
+        prev_xdg: Option<String>,
+    }
+
+    impl EnvTestGuard {
+        fn new() -> Self {
+            let lock = match ENV_MUTEX.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+            let xdg_tmp = tempfile::tempdir().expect("create xdg isolate dir");
+            std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path());
+            EnvTestGuard {
+                _lock: lock,
+                _xdg_tmp: xdg_tmp,
+                prev_xdg,
+            }
+        }
+    }
+
+    impl Drop for EnvTestGuard {
+        fn drop(&mut self) {
+            match &self.prev_xdg {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
     /// Helper to create a temp dir with `.sb/config.toml` and return the temp dir.
     fn setup_config_dir(toml_content: &str) -> tempfile::TempDir {
         let dir = tempfile::tempdir().expect("create tempdir");
@@ -591,7 +723,7 @@ mod tests {
 
     #[test]
     fn defaults_returns_correct_values() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         // No .sb/config.toml, no env vars
         let config = ResolvedConfig::load_from(dir.path()).expect("load defaults");
@@ -623,7 +755,7 @@ mod tests {
 
     #[test]
     fn loads_values_from_toml_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 server_url = "https://sb.example.com"
@@ -645,7 +777,7 @@ token = "secret123"
 
     #[test]
     fn env_var_overrides_file_value_for_token() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 token = "filetoken"
@@ -665,7 +797,7 @@ token = "filetoken"
 
     #[test]
     fn env_var_overrides_file_value_for_sync_workers() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [sync]
@@ -686,7 +818,7 @@ workers = 2
 
     #[test]
     fn unset_values_use_defaults() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
 
@@ -699,7 +831,7 @@ workers = 2
 
     #[test]
     fn full_precedence_env_over_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [sync]
@@ -721,7 +853,7 @@ workers = 2
 
     #[test]
     fn file_value_used_when_no_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [sync]
@@ -772,7 +904,7 @@ workers = 2
 
     #[test]
     fn malformed_toml_returns_config_error() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir("this is not valid toml {{{}}}");
         let result = ResolvedConfig::load_from(dir.path());
         assert!(result.is_err());
@@ -787,7 +919,7 @@ workers = 2
 
     #[test]
     fn env_bool_parsing_accepts_true_1_false_0() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir("");
 
         std::env::set_var("SB_SHELL_ENABLED", "1");
@@ -813,7 +945,7 @@ workers = 2
 
     #[test]
     fn env_vec_parsing_comma_separated() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir("");
 
         std::env::set_var("SB_SYNC_EXCLUDE", "_plug/*,private/*,drafts/*");
@@ -846,7 +978,7 @@ workers = 2
 
     #[test]
     fn finds_config_in_parent_directory() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let sb_dir = dir.path().join(".sb");
         std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
@@ -872,7 +1004,7 @@ workers = 2
 
     #[test]
     fn runtime_available_defaults_to_false() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let config = ResolvedConfig::load_from(dir.path()).expect("load defaults");
         assert!(!config.runtime_available.value);
@@ -881,7 +1013,7 @@ workers = 2
 
     #[test]
     fn runtime_available_loads_true_from_config_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [runtime]
@@ -895,7 +1027,7 @@ available = true
 
     #[test]
     fn runtime_available_env_var_overrides_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [runtime]
@@ -966,7 +1098,7 @@ available = false
 
     #[test]
     fn daily_time_format_defaults_to_hh_mm() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
         assert_eq!(config.daily_time_format.value, "%H:%M");
@@ -975,7 +1107,7 @@ available = false
 
     #[test]
     fn daily_time_format_loads_from_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [daily]
@@ -989,7 +1121,7 @@ timeFormat = "%H:%M:%S"
 
     #[test]
     fn daily_time_format_env_var_overrides_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [daily]
@@ -1008,7 +1140,7 @@ timeFormat = "%H:%M"
 
     #[test]
     fn daily_bullet_style_defaults_to_star() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
         assert_eq!(config.daily_bullet_style.value, "*");
@@ -1017,7 +1149,7 @@ timeFormat = "%H:%M"
 
     #[test]
     fn daily_bullet_style_dash_is_accepted() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [daily]
@@ -1030,7 +1162,7 @@ bulletStyle = "-"
 
     #[test]
     fn daily_bullet_style_invalid_value_errors() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [daily]
@@ -1051,7 +1183,7 @@ bulletStyle = "+"
 
     #[test]
     fn daily_template_loads_from_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 [daily]
@@ -1071,7 +1203,7 @@ template = "Daily note for {{date}}"
 
     /// Helper: build a ResolvedConfig with a specific token value and source.
     fn config_with_token(token: Option<&str>) -> ResolvedConfig {
-        let _lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         match token {
             Some(t) => {
@@ -1093,7 +1225,7 @@ template = "Daily note for {{date}}"
 
     #[test]
     fn resolve_token_env_wins_over_config_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(r#"token = "config-token""#);
         std::env::set_var("SB_TOKEN", "env-token");
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
@@ -1105,7 +1237,7 @@ template = "Daily note for {{date}}"
 
     #[test]
     fn resolve_token_uses_config_file_when_no_flag_or_env() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(r#"token = "config-token""#);
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
         let result = resolve_token(None, &config);
@@ -1115,7 +1247,7 @@ template = "Daily note for {{date}}"
 
     #[test]
     fn resolve_token_returns_token_not_found_when_all_sources_empty() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
         let result = resolve_token(None, &config);
@@ -1193,7 +1325,7 @@ template = "Daily note for {{date}}"
 
     #[test]
     fn write_config_file_roundtrip_parsed_by_resolved_config() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
         let sb_dir = dir.path().join(".sb");
         std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
@@ -1224,7 +1356,7 @@ template = "Daily note for {{date}}"
     #[test]
     fn resolve_token_env_wins_over_keychain() {
         // Even with auth_keychain = true, env token should win at step 2
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 token = "file-token"
@@ -1242,7 +1374,7 @@ keychain = true
 
     #[test]
     fn resolve_token_not_found_includes_keychain_when_enabled() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
             r#"
 server_url = "https://example.com"
@@ -1266,7 +1398,7 @@ keychain = true
 
     #[test]
     fn resolve_token_not_found_omits_keychain_when_disabled() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(r#"server_url = "https://example.com""#);
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
         let result = resolve_token(None, &config);
@@ -1285,7 +1417,7 @@ keychain = true
     #[test]
     fn resolve_token_file_token_used_when_keychain_disabled() {
         // With keychain disabled, file token should still work (step 4 fallback)
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let dir = setup_config_dir(r#"token = "file-token""#);
         let config = ResolvedConfig::load_from(dir.path()).expect("load config");
         assert_eq!(config.token.source, ConfigSource::File);
@@ -1304,7 +1436,7 @@ keychain = true
 
     #[test]
     fn expand_tilde_bare_tilde_expands_to_home() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         std::env::set_var("HOME", "/home/testuser");
         let result = expand_tilde("~").expect("expand ~");
         std::env::remove_var("HOME");
@@ -1313,7 +1445,7 @@ keychain = true
 
     #[test]
     fn expand_tilde_tilde_slash_expands_to_home_subdir() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         std::env::set_var("HOME", "/home/testuser");
         let result = expand_tilde("~/notes").expect("expand ~/notes");
         std::env::remove_var("HOME");
@@ -1339,7 +1471,7 @@ keychain = true
 
     #[test]
     fn xdg_config_dir_uses_xdg_config_home_when_set() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         std::env::set_var("XDG_CONFIG_HOME", "/custom/config");
         let result = xdg_config_dir().expect("xdg_config_dir");
         std::env::remove_var("XDG_CONFIG_HOME");
@@ -1348,7 +1480,7 @@ keychain = true
 
     #[test]
     fn xdg_config_dir_defaults_to_home_dot_config_sb() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         std::env::remove_var("XDG_CONFIG_HOME");
         std::env::set_var("HOME", "/home/testuser");
         let result = xdg_config_dir().expect("xdg_config_dir");
@@ -1360,7 +1492,7 @@ keychain = true
 
     #[test]
     fn user_config_roundtrip_write_then_load() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let xdg_dir = tempfile::tempdir().expect("create tempdir");
         std::env::set_var("XDG_CONFIG_HOME", xdg_dir.path());
 
@@ -1375,7 +1507,7 @@ keychain = true
 
     #[test]
     fn load_user_config_returns_defaults_when_no_file() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let xdg_dir = tempfile::tempdir().expect("create tempdir");
         std::env::set_var("XDG_CONFIG_HOME", xdg_dir.path());
 
@@ -1387,7 +1519,7 @@ keychain = true
 
     #[test]
     fn write_user_config_space_preserves_existing_keys() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        let _g = EnvTestGuard::new();
         let xdg_dir = tempfile::tempdir().expect("create tempdir");
         std::env::set_var("XDG_CONFIG_HOME", xdg_dir.path());
 
@@ -1403,5 +1535,148 @@ keychain = true
         assert!(content.contains("/tmp/space"), "should contain space path");
 
         std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    // ------------------------------------------------------------------------
+    // XDG fallback: load_from layers per-space > XDG > default for every field
+    //
+    // These tests bypass `EnvTestGuard`'s XDG isolation because they need to
+    // populate the XDG file. They take the bare `ENV_MUTEX` directly so they
+    // serialize against other env-mutating tests.
+    // ------------------------------------------------------------------------
+
+    /// Set up an XDG config dir with the given contents.
+    /// Returns (TempDir, prev XDG_CONFIG_HOME) for caller-managed cleanup.
+    fn setup_xdg_dir(toml_content: &str) -> (tempfile::TempDir, Option<String>) {
+        let xdg_tmp = tempfile::tempdir().expect("create xdg tempdir");
+        let sb_subdir = xdg_tmp.path().join("sb");
+        std::fs::create_dir_all(&sb_subdir).expect("create xdg/sb dir");
+        std::fs::write(sb_subdir.join("config.toml"), toml_content).expect("write xdg config");
+        let prev = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path());
+        (xdg_tmp, prev)
+    }
+
+    fn restore_xdg(prev: Option<String>) {
+        match prev {
+            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+    }
+
+    #[test]
+    fn xdg_value_used_when_per_space_does_not_define_it() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let space_dir = tempfile::tempdir().expect("create space tempdir");
+        let (xdg_tmp, prev) = setup_xdg_dir(
+            r#"
+server_url = "https://from-xdg.example.com"
+[sync]
+dir = "from-xdg-sync-dir"
+"#,
+        );
+        // No per-space config file -- XDG should be used as fallback.
+        let config = ResolvedConfig::load_from(space_dir.path()).expect("load config");
+        assert_eq!(
+            config.server_url.value.as_deref(),
+            Some("https://from-xdg.example.com")
+        );
+        assert_eq!(config.server_url.source, ConfigSource::UserFile);
+        assert_eq!(config.sync_dir.value, "from-xdg-sync-dir");
+        assert_eq!(config.sync_dir.source, ConfigSource::UserFile);
+        drop(xdg_tmp);
+        restore_xdg(prev);
+    }
+
+    #[test]
+    fn per_space_overrides_xdg_when_both_define_a_field() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let space_dir = setup_config_dir(r#"server_url = "https://from-per-space.example.com""#);
+        let (xdg_tmp, prev) = setup_xdg_dir(r#"server_url = "https://from-xdg.example.com""#);
+        let config = ResolvedConfig::load_from(space_dir.path()).expect("load config");
+        assert_eq!(
+            config.server_url.value.as_deref(),
+            Some("https://from-per-space.example.com")
+        );
+        assert_eq!(
+            config.server_url.source,
+            ConfigSource::File,
+            "per-space file must take precedence over XDG"
+        );
+        drop(xdg_tmp);
+        restore_xdg(prev);
+    }
+
+    #[test]
+    fn env_overrides_both_per_space_and_xdg() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let space_dir = setup_config_dir(r#"server_url = "https://from-per-space.example.com""#);
+        let (xdg_tmp, prev) = setup_xdg_dir(r#"server_url = "https://from-xdg.example.com""#);
+        std::env::set_var("SB_SERVER_URL", "https://from-env.example.com");
+        let config = ResolvedConfig::load_from(space_dir.path()).expect("load config");
+        std::env::remove_var("SB_SERVER_URL");
+        assert_eq!(
+            config.server_url.value.as_deref(),
+            Some("https://from-env.example.com")
+        );
+        assert!(matches!(config.server_url.source, ConfigSource::Env(_)));
+        drop(xdg_tmp);
+        restore_xdg(prev);
+    }
+
+    #[test]
+    fn xdg_token_used_when_per_space_has_no_token() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let space_dir = setup_config_dir(r#"server_url = "https://example.com""#);
+        let (xdg_tmp, prev) = setup_xdg_dir(r#"token = "from-xdg-token""#);
+        let config = ResolvedConfig::load_from(space_dir.path()).expect("load config");
+        let resolved = resolve_token(None, &config).expect("token must resolve");
+        assert_eq!(resolved, "from-xdg-token");
+        assert_eq!(config.token.source, ConfigSource::UserFile);
+        drop(xdg_tmp);
+        restore_xdg(prev);
+    }
+
+    #[test]
+    fn xdg_daily_and_runtime_blocks_are_honored() {
+        let _lock = ENV_MUTEX.lock().unwrap();
+        let space_dir = tempfile::tempdir().expect("create space tempdir");
+        let (xdg_tmp, prev) = setup_xdg_dir(
+            r#"
+[daily]
+path = "Journals/{{date}}"
+[runtime]
+available = true
+[shell]
+enabled = true
+"#,
+        );
+        let config = ResolvedConfig::load_from(space_dir.path()).expect("load config");
+        assert_eq!(config.daily_path.value, "Journals/{{date}}");
+        assert_eq!(config.daily_path.source, ConfigSource::UserFile);
+        assert!(config.runtime_available.value);
+        assert_eq!(config.runtime_available.source, ConfigSource::UserFile);
+        assert!(config.shell_enabled.value);
+        assert_eq!(config.shell_enabled.source, ConfigSource::UserFile);
+        drop(xdg_tmp);
+        restore_xdg(prev);
+    }
+
+    #[test]
+    fn token_not_found_message_lists_xdg_source() {
+        let _g = EnvTestGuard::new();
+        // No per-space token, no XDG file (EnvTestGuard isolates XDG to an empty dir).
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        let err = resolve_token(None, &config).unwrap_err();
+        match err {
+            SbError::TokenNotFound { checked } => {
+                assert!(
+                    checked.iter().any(|s| s.contains(".config/sb/config.toml")),
+                    "checked list should mention XDG config; got: {checked:?}"
+                );
+            }
+            other => panic!("expected TokenNotFound, got: {other:?}"),
+        }
     }
 }

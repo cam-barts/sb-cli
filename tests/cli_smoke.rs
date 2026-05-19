@@ -5,6 +5,7 @@ use predicates::prelude::*;
 fn version_subcommand_prints_version_info() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .arg("version")
         .assert()
         .success()
@@ -18,6 +19,7 @@ fn version_subcommand_prints_version_info() {
 fn version_flag_prints_compact() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .arg("--version")
         .assert()
         .success()
@@ -28,6 +30,7 @@ fn version_flag_prints_compact() {
 fn unknown_subcommand_exits_2() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .arg("nonexistent")
         .assert()
         .code(2);
@@ -37,6 +40,7 @@ fn unknown_subcommand_exits_2() {
 fn quiet_flag_suppresses_version_output() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--quiet", "version"])
         .assert()
         .success()
@@ -47,6 +51,7 @@ fn quiet_flag_suppresses_version_output() {
 fn no_subcommand_shows_help() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .assert()
         .success()
         .stdout(predicate::str::contains("Usage:"));
@@ -56,6 +61,7 @@ fn no_subcommand_shows_help() {
 fn invalid_flag_exits_2() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .arg("--nonexistent-flag")
         .assert()
         .code(2);
@@ -67,6 +73,7 @@ fn json_format_config_show_no_config_produces_valid_json() {
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "config", "show"])
         .current_dir(tmpdir.path())
         .output()

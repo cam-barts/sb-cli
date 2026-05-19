@@ -27,6 +27,7 @@ async fn shell_disabled_prints_warning() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "ls"])
         .current_dir(dir.path())
         .assert()
@@ -50,6 +51,7 @@ async fn shell_enabled_sends_post_and_prints_stdout() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "echo", "hello world"])
         .current_dir(dir.path())
         .assert()
@@ -73,6 +75,7 @@ async fn shell_enabled_prints_stderr() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "badcmd"])
         .current_dir(dir.path())
         .assert()
@@ -86,6 +89,7 @@ async fn shell_no_command_returns_usage_error() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell"])
         .current_dir(dir.path())
         .assert()
@@ -112,6 +116,7 @@ async fn shell_sends_correct_json_body() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "ls", "-la", "/tmp"])
         .current_dir(dir.path())
         .assert()
@@ -138,6 +143,7 @@ async fn shell_propagates_exit_code() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "failing-cmd"])
         .current_dir(dir.path())
         .assert()
