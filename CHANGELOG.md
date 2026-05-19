@@ -1,3 +1,9 @@
+## v1.3.2 (2026-05-19)
+
+### Fix
+
+- **daily,page**: route writes through content_dir, not space_root (#1)
+
 ## v1.3.1 (2026-05-18)
 
 ### Fix
