@@ -45,15 +45,17 @@ fn daily_appends_pick_up_daily_path_from_xdg() {
     // settings live in XDG. We assert that `daily.path` (custom path template)
     // is read from XDG when the per-space file doesn't define it.
     //
-    // Note: this test does NOT verify routing through sync.dir — that's a
-    // separate fix on its own branch (fix/route-writes-through-content-dir).
-    // Here we only verify the XDG layer is consulted.
+    // `sync.dir = "."` is set so content_dir == space_root and the file lands
+    // at a predictable path; the routing-through-content_dir behavior is
+    // covered by `tests/cli_content_dir_routing_test.rs`.
     let (space, xdg) = setup(
         // Per-space file: server_url only, no [daily] block.
         "server_url = \"https://example.com\"\n",
         // XDG file: custom daily.path. If XDG fallback works, this wins over
         // the built-in default "Journal/{{date}}" (singular).
-        r#"[daily]
+        r#"[sync]
+dir = "."
+[daily]
 path = "Journals/{{date}}"
 "#,
     );
@@ -74,9 +76,8 @@ path = "Journals/{{date}}"
         .join(format!("{}.md", today.strftime("%Y-%m-%d")));
     assert!(
         from_xdg.is_file(),
-        "daily.path from XDG must be honored; expected {}\nspace tree:\n{}",
+        "daily.path from XDG must be honored; expected {}",
         from_xdg.display(),
-        dump_tree(space.path()),
     );
     assert!(
         !from_default.exists(),
@@ -84,29 +85,6 @@ path = "Journals/{{date}}"
          found stray file at {}",
         from_default.display()
     );
-}
-
-/// Recursively list paths under `root` (relative). Used for failure diagnostics
-/// when an expected file doesn't materialize where the test predicts.
-fn dump_tree(root: &Path) -> String {
-    let mut out = String::new();
-    fn walk(path: &Path, root: &Path, out: &mut String) {
-        let Ok(rd) = std::fs::read_dir(path) else {
-            return;
-        };
-        for entry in rd.flatten() {
-            let p = entry.path();
-            let rel = p.strip_prefix(root).unwrap_or(&p);
-            out.push_str("  ");
-            out.push_str(&rel.display().to_string());
-            out.push('\n');
-            if p.is_dir() {
-                walk(&p, root, out);
-            }
-        }
-    }
-    walk(root, root, &mut out);
-    out
 }
 
 #[tokio::test]
