@@ -24,7 +24,7 @@ fn setup_space(config_toml: &str) -> TempDir {
 }
 
 fn default_space() -> TempDir {
-    setup_space("server_url = \"https://sb.example.com\"\n")
+    setup_space("server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n")
 }
 
 /// Build an `sb` Command already configured to run from within the space dir.
@@ -187,6 +187,8 @@ fn daily_no_editor_set_exits_with_error() {
 fn daily_custom_path_template_creates_note_at_custom_path() {
     let space = setup_space(
         r#"server_url = "https://sb.example.com"
+[sync]
+dir = "."
 [daily]
 path = "Notes/Daily/{{date}}"
 dateFormat = "%Y/%m/%d"
@@ -217,6 +219,8 @@ dateFormat = "%Y/%m/%d"
 fn daily_uses_local_template_when_note_does_not_exist() {
     let space = setup_space(
         r#"server_url = "https://sb.example.com"
+[sync]
+dir = "."
 [daily]
 template = "Templates/DailyTemplate"
 "#,

@@ -44,6 +44,18 @@ pub fn validate_page_path(space_root: &Path, name: &str) -> SbResult<PathBuf> {
     Ok(resolve_page_path(space_root, name))
 }
 
+/// Resolve the content directory: `space_root.join(sync.dir)`.
+///
+/// This is where SilverBullet's markdown files actually live. It may differ
+/// from `space_root` (which is the directory containing `.sb/`) when the user
+/// has configured `sync.dir` to an absolute path or a subdirectory. All page
+/// read/write operations must use this directory; sync uses the same formula.
+pub fn find_content_dir() -> SbResult<PathBuf> {
+    let space_root = find_space_root()?;
+    let config = crate::config::ResolvedConfig::load_from(&space_root)?;
+    Ok(space_root.join(&config.sync_dir.value))
+}
+
 /// Find the space root using a layered resolver:
 /// 1. `SB_SPACE` env var (absolute or `~/`-relative)
 /// 2. Walk up from cwd looking for `.sb/config.toml`
@@ -210,8 +222,8 @@ pub async fn execute_list(
 ) -> SbResult<()> {
     let _ = (quiet, color); // reserved for future use (e.g., colored output)
 
-    let space_root = find_space_root()?;
-    let mut entries = collect_pages(&space_root)?;
+    let content_dir = find_content_dir()?;
+    let mut entries = collect_pages(&content_dir)?;
 
     // Sort
     match sort {
@@ -300,15 +312,15 @@ pub async fn execute_read(
     _quiet: bool,
     _color: bool,
 ) -> SbResult<()> {
-    let space_root = find_space_root()?;
-    validate_page_path(&space_root, name)?;
+    let content_dir = find_content_dir()?;
+    validate_page_path(&content_dir, name)?;
 
     if remote {
         let client = build_client(cli_token)?;
         let content = client.get_page(name).await?;
         print!("{}", content);
     } else {
-        let page_path = resolve_page_path(&space_root, name);
+        let page_path = resolve_page_path(&content_dir, name);
         if !page_path.exists() {
             return Err(SbError::PageNotFound {
                 name: name.to_string(),
@@ -345,8 +357,8 @@ pub async fn execute_create(
 ) -> SbResult<()> {
     use std::io::Read;
 
-    let space_root = find_space_root()?;
-    let page_path = validate_page_path(&space_root, name)?;
+    let content_dir = find_content_dir()?;
+    let page_path = validate_page_path(&content_dir, name)?;
 
     // Duplicate check
     if page_path.exists() {
@@ -386,7 +398,7 @@ pub async fn execute_create(
         open_editor = edit;
     } else if let Some(tmpl_name) = template {
         // 3. --template: try local first, then remote
-        let local_tmpl = resolve_page_path(&space_root, tmpl_name);
+        let local_tmpl = resolve_page_path(&content_dir, tmpl_name);
         if local_tmpl.exists() {
             body = std::fs::read_to_string(&local_tmpl).map_err(|e| SbError::Filesystem {
                 message: "failed to read template".to_string(),
@@ -422,8 +434,8 @@ pub async fn execute_create(
 
 /// Edit an existing page in `$EDITOR`.
 pub async fn execute_edit(name: &str, _quiet: bool, _color: bool) -> SbResult<()> {
-    let space_root = find_space_root()?;
-    let page_path = validate_page_path(&space_root, name)?;
+    let content_dir = find_content_dir()?;
+    let page_path = validate_page_path(&content_dir, name)?;
     if !page_path.exists() {
         return Err(SbError::PageNotFound {
             name: name.to_string(),
@@ -464,8 +476,8 @@ async fn confirm_delete(name: &str) -> SbResult<bool> {
 /// Without --force: prompts on TTY, refuses on non-TTY (fail-safe).
 /// With --force: deletes immediately without prompting.
 pub async fn execute_delete(name: &str, force: bool, quiet: bool, color: bool) -> SbResult<()> {
-    let space_root = find_space_root()?;
-    let page_path = validate_page_path(&space_root, name)?;
+    let content_dir = find_content_dir()?;
+    let page_path = validate_page_path(&content_dir, name)?;
     if !page_path.exists() {
         return Err(SbError::PageNotFound {
             name: name.to_string(),
@@ -489,8 +501,8 @@ pub async fn execute_delete(name: &str, force: bool, quiet: bool, color: bool) -
 
 /// Append content to a page, creating it if it doesn't exist.
 pub async fn execute_append(name: &str, content: &str, quiet: bool, color: bool) -> SbResult<()> {
-    let space_root = find_space_root()?;
-    let page_path = validate_page_path(&space_root, name)?;
+    let content_dir = find_content_dir()?;
+    let page_path = validate_page_path(&content_dir, name)?;
     if page_path.exists() {
         // Append with newline separator using OpenOptions::append
         use std::io::Write;
@@ -530,8 +542,9 @@ pub async fn execute_append(name: &str, content: &str, quiet: bool, color: bool)
 /// Move/rename a page, creating intermediate directories for the target.
 pub async fn execute_move(name: &str, new_name: &str, quiet: bool, color: bool) -> SbResult<()> {
     let space_root = find_space_root()?;
-    let src_path = validate_page_path(&space_root, name)?;
-    let dst_path = validate_page_path(&space_root, new_name)?;
+    let content_dir = find_content_dir()?;
+    let src_path = validate_page_path(&content_dir, name)?;
+    let dst_path = validate_page_path(&content_dir, new_name)?;
     if !src_path.exists() {
         return Err(SbError::PageNotFound {
             name: name.to_string(),
