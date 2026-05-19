@@ -74,8 +74,9 @@ path = "Journals/{{date}}"
         .join(format!("{}.md", today.strftime("%Y-%m-%d")));
     assert!(
         from_xdg.is_file(),
-        "daily.path from XDG must be honored; expected {}",
-        from_xdg.display()
+        "daily.path from XDG must be honored; expected {}\nspace tree:\n{}",
+        from_xdg.display(),
+        dump_tree(space.path()),
     );
     assert!(
         !from_default.exists(),
@@ -83,6 +84,29 @@ path = "Journals/{{date}}"
          found stray file at {}",
         from_default.display()
     );
+}
+
+/// Recursively list paths under `root` (relative). Used for failure diagnostics
+/// when an expected file doesn't materialize where the test predicts.
+fn dump_tree(root: &Path) -> String {
+    let mut out = String::new();
+    fn walk(path: &Path, root: &Path, out: &mut String) {
+        let Ok(rd) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let p = entry.path();
+            let rel = p.strip_prefix(root).unwrap_or(&p);
+            out.push_str("  ");
+            out.push_str(&rel.display().to_string());
+            out.push('\n');
+            if p.is_dir() {
+                walk(&p, root, out);
+            }
+        }
+    }
+    walk(root, root, &mut out);
+    out
 }
 
 #[tokio::test]
