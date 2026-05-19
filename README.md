@@ -261,4 +261,3 @@ Credit to the enormous body of open source software the models were trained on, 
 ## License
 
 MIT -- see [LICENSE](LICENSE) for details.
-
