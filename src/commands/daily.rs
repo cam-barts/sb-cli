@@ -311,12 +311,12 @@ pub fn list_daily_files(
 ///
 /// Returns `None` when the template cannot be found in either location.
 async fn fetch_template_content(
-    space_root: &Path,
+    content_dir: &Path,
     template_name: &str,
     config: &ResolvedConfig,
     cli_token: Option<&str>,
 ) -> SbResult<Option<String>> {
-    let local_path = space_root.join(format!("{}.md", template_name));
+    let local_path = content_dir.join(format!("{}.md", template_name));
     if local_path.exists() {
         let content = std::fs::read_to_string(&local_path).map_err(|e| SbError::Filesystem {
             message: "failed to read template".into(),
@@ -349,7 +349,7 @@ async fn fetch_template_content(
 /// Returns `true` when the file was just created.
 async fn ensure_day_file(
     page_path: &Path,
-    space_root: &Path,
+    content_dir: &Path,
     config: &ResolvedConfig,
     cli_token: Option<&str>,
 ) -> SbResult<bool> {
@@ -364,7 +364,7 @@ async fn ensure_day_file(
         })?;
     }
     let content = if let Some(ref template_name) = config.daily_template.value {
-        fetch_template_content(space_root, template_name, config, cli_token)
+        fetch_template_content(content_dir, template_name, config, cli_token)
             .await?
             .unwrap_or_default()
     } else {
@@ -434,6 +434,7 @@ pub struct DailyArgs<'a> {
 pub async fn execute(args: DailyArgs<'_>) -> SbResult<()> {
     let space_root = find_space_root()?;
     let config = ResolvedConfig::load_from(&space_root)?;
+    let content_dir = space_root.join(&config.sync_dir.value);
 
     let stdin_piped = !std::io::stdin().is_terminal();
     let has_write_input = !args.entry.is_empty() || stdin_piped || args.append.is_some();
@@ -448,10 +449,10 @@ pub async fn execute(args: DailyArgs<'_>) -> SbResult<()> {
         || (args.on.is_some() && !has_write_input);
 
     if is_read {
-        return execute_read(&space_root, &config, &args).await;
+        return execute_read(&content_dir, &config, &args).await;
     }
 
-    execute_write_or_editor(&space_root, &config, &args, stdin_piped).await
+    execute_write_or_editor(&content_dir, &config, &args, stdin_piped).await
 }
 
 /// Write/editor dispatcher: pulls entry text from positional args, stdin, or
