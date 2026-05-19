@@ -121,9 +121,14 @@ pub fn make_space(server_url: Option<&str>) -> tempfile::TempDir {
     let tmp = tempfile::tempdir().expect("create tempdir");
     let sb_dir = tmp.path().join(".sb");
     std::fs::create_dir_all(&sb_dir).expect("create .sb");
+    // sync.dir defaults to "space" — set "." so content lives at the space root
+    // (the simplest shape for tests that seed pages directly at tmp.path()).
     let body = match server_url {
-        Some(u) => format!("server_url = \"{}\"\ntoken = \"test-token\"\n", u),
-        None => String::new(),
+        Some(u) => format!(
+            "server_url = \"{}\"\ntoken = \"test-token\"\n[sync]\ndir = \".\"\n",
+            u
+        ),
+        None => "[sync]\ndir = \".\"\n".to_string(),
     };
     std::fs::write(sb_dir.join("config.toml"), body).expect("write config.toml");
     tmp

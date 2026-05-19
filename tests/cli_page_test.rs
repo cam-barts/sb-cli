@@ -17,7 +17,7 @@ fn setup_space() -> TempDir {
     let sb_dir = dir.path().join(".sb");
     std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
     let mut f = std::fs::File::create(sb_dir.join("config.toml")).expect("create config.toml");
-    f.write_all(b"server_url = \"https://sb.example.com\"\n")
+    f.write_all(b"server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n")
         .expect("write config.toml");
     dir
 }
@@ -272,7 +272,10 @@ fn page_read_remote_fetches_from_server() {
         let dir = tempfile::tempdir().expect("create tempdir");
         let sb_dir = dir.path().join(".sb");
         std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
-        let config_content = format!("server_url = \"{}\"\ntoken = \"testtoken\"\n", server.uri());
+        let config_content = format!(
+            "server_url = \"{}\"\ntoken = \"testtoken\"\n[sync]\ndir = \".\"\n",
+            server.uri()
+        );
         std::fs::write(sb_dir.join("config.toml"), config_content).expect("write config");
 
         Command::cargo_bin("sb")

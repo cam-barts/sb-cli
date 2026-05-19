@@ -72,7 +72,7 @@ fn page_move_updates_state_db_deletes_old_path_inserts_new() {
     std::fs::create_dir_all(&sb_dir).unwrap();
     std::fs::write(
         sb_dir.join("config.toml"),
-        "server_url = \"https://sb.example.com\"\n",
+        "server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n",
     )
     .unwrap();
 
@@ -132,7 +132,7 @@ fn page_move_state_db_update_is_atomic_no_partial_state() {
     std::fs::create_dir_all(&sb_dir).unwrap();
     std::fs::write(
         sb_dir.join("config.toml"),
-        "server_url = \"https://sb.example.com\"\n",
+        "server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n",
     )
     .unwrap();
 
@@ -180,7 +180,7 @@ fn page_move_works_when_state_db_has_no_row_for_old_path() {
     std::fs::create_dir_all(&sb_dir).unwrap();
     std::fs::write(
         sb_dir.join("config.toml"),
-        "server_url = \"https://sb.example.com\"\n",
+        "server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n",
     )
     .unwrap();
 
@@ -543,7 +543,7 @@ fn resolve_without_path_exits_with_usage_error() {
     std::fs::create_dir_all(&sb_dir).unwrap();
     std::fs::write(
         sb_dir.join("config.toml"),
-        "server_url = \"https://sb.example.com\"\n",
+        "server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n",
     )
     .unwrap();
 
@@ -580,7 +580,7 @@ fn resolve_keep_local_and_keep_remote_conflict() {
     std::fs::create_dir_all(&sb_dir).unwrap();
     std::fs::write(
         sb_dir.join("config.toml"),
-        "server_url = \"https://sb.example.com\"\n",
+        "server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n",
     )
     .unwrap();
 
