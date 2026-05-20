@@ -32,6 +32,7 @@ async fn init_creates_sb_directory_and_files() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -74,6 +75,7 @@ async fn init_writes_server_url_to_config_toml() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -102,6 +104,7 @@ async fn init_without_token_flag_does_not_write_token() {
     // Pass SB_TOKEN env — it should NOT be persisted to config.toml (T-02-07)
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri()])
         .current_dir(temp_dir.path())
         .env("SB_TOKEN", "envtoken")
@@ -129,6 +132,7 @@ async fn init_failed_ping_removes_sb_directory() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -151,6 +155,7 @@ async fn init_failed_ping_exits_with_code_1() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -167,6 +172,7 @@ async fn init_already_initialized_aborts() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", "http://example.com", "--token", "t"])
         .current_dir(temp_dir.path())
         .assert()
@@ -184,6 +190,7 @@ async fn init_state_db_is_valid_sqlite() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -209,6 +216,7 @@ async fn init_normalizes_trailing_slash_in_url() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &url_with_slash, "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .assert()
@@ -238,6 +246,7 @@ async fn init_http_url_warns_about_insecure() {
     // MockServer always uses http:// so this test inherently uses an HTTP URL
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
         .current_dir(temp_dir.path())
         .output()

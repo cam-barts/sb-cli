@@ -38,6 +38,7 @@ async fn logs_human_format_renders_entries() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs"])
         .current_dir(dir.path())
         .assert()
@@ -64,6 +65,7 @@ async fn logs_ndjson_format_emits_one_entry_per_line() {
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "logs"])
         .current_dir(dir.path())
         .assert()
@@ -96,6 +98,7 @@ async fn logs_source_client_filters_out_server_entries() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs", "--source", "client"])
         .current_dir(dir.path())
         .assert()
@@ -118,6 +121,7 @@ async fn logs_503_maps_to_runtime_unavailable_message() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["logs"])
         .current_dir(dir.path())
         .assert()
@@ -148,6 +152,7 @@ async fn screenshot_writes_png_to_specified_path() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
             "--format",
             "human",
@@ -182,6 +187,7 @@ async fn screenshot_dash_writes_png_to_stdout() {
 
     let out = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "screenshot", "--output", "-"])
         .current_dir(dir.path())
         .assert()
@@ -212,6 +218,7 @@ async fn screenshot_json_format_emits_envelope_with_path() {
 
     let stdout = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
             "--format",
             "json",
@@ -238,6 +245,7 @@ async fn screenshot_json_with_stdout_dash_is_usage_error() {
     let dir = setup_space("http://localhost:19999", true);
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "screenshot", "--output", "-"])
         .current_dir(dir.path())
         .assert()
@@ -262,6 +270,7 @@ async fn describe_renders_field_table_in_human_format() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "describe", "task"])
         .current_dir(dir.path())
         .assert()
@@ -288,6 +297,7 @@ async fn describe_json_format_returns_structured_payload() {
 
     let stdout = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "describe", "page"])
         .current_dir(dir.path())
         .assert()
@@ -307,6 +317,7 @@ async fn describe_rejects_tag_with_unsafe_characters() {
     let dir = setup_space("http://localhost:19999", true);
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["describe", "foo\"bar"])
         .current_dir(dir.path())
         .assert()
@@ -331,6 +342,7 @@ async fn describe_sends_lua_script_with_tag_and_limit() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "describe", "template", "--limit", "7"])
         .current_dir(dir.path())
         .assert()
@@ -345,6 +357,7 @@ async fn describe_runtime_unavailable_prints_docs_link() {
     let dir = setup_space("http://localhost:19999", false);
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["describe", "task"])
         .current_dir(dir.path())
         .assert()

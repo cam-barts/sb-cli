@@ -29,6 +29,7 @@ keychain = true
     // listing all checked sources including "OS keychain"
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())
         .args(["server", "ping"])
         .assert()
@@ -47,6 +48,7 @@ server_url = "https://example.com"
     );
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())
         .args(["server", "ping"])
         .assert()
@@ -64,6 +66,7 @@ server_url = "https://example.com"
     );
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())
         .args(["auth", "set", "--token", "new-token-value"])
         .assert()
@@ -129,6 +132,7 @@ keychain = true
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())
         .args(["auth", "set", "--token", "keychain-stored-token"])
         .assert()

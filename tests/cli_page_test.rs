@@ -32,9 +32,13 @@ fn write_page(dir: &TempDir, name: &str, content: &str) {
 }
 
 /// Build an `sb` command rooted at the given temp directory.
+///
+/// Pins `XDG_CONFIG_HOME` to a non-existent path so the dev's real XDG config
+/// can't leak into the subprocess and contaminate the test.
 fn sb_cmd(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
-    cmd.current_dir(dir.path());
+    cmd.current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 
@@ -193,6 +197,7 @@ fn page_list_in_non_initialized_directory_returns_error() {
 
     Command::cargo_bin("sb")
         .expect("sb binary")
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
         .env_remove("SB_SPACE")
@@ -275,6 +280,7 @@ fn page_read_remote_fetches_from_server() {
 
         Command::cargo_bin("sb")
             .expect("sb binary")
+            .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
             .current_dir(dir.path())
             .args(["page", "read", "--remote", "test-page"])
             .assert()

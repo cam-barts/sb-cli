@@ -51,9 +51,13 @@ fn setup_space(dir: &TempDir, server_url: &str) -> std::path::PathBuf {
 }
 
 /// Build an `sb` command rooted at the given space directory.
+///
+/// Pins `XDG_CONFIG_HOME` to a non-existent path so the dev's real XDG config
+/// can't leak into the subprocess and contaminate the test.
 fn sb_in(space: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
-    cmd.current_dir(space);
+    cmd.current_dir(space)
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 
@@ -88,6 +92,7 @@ fn page_move_updates_state_db_deletes_old_path_inserts_new() {
     // Run sb page move
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["page", "move", "old-page", "new-page"])
         .current_dir(dir.path())
         .assert()
@@ -146,6 +151,7 @@ fn page_move_state_db_update_is_atomic_no_partial_state() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["page", "move", "old-page2", "new-page2"])
         .current_dir(dir.path())
         .assert()
@@ -189,6 +195,7 @@ fn page_move_works_when_state_db_has_no_row_for_old_path() {
     // Should succeed even though old path has no state.db row
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["page", "move", "untracked-page", "moved-page"])
         .current_dir(dir.path())
         .assert()
@@ -542,6 +549,7 @@ fn resolve_without_path_exits_with_usage_error() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["sync", "resolve"])
         .current_dir(dir.path())
         .assert()
@@ -554,6 +562,7 @@ fn resolve_without_path_exits_with_usage_error() {
 fn resolve_help_shows_all_flags() {
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["sync", "resolve", "--help"])
         .assert()
         .success()
@@ -577,6 +586,7 @@ fn resolve_keep_local_and_keep_remote_conflict() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
             "sync",
             "resolve",
@@ -636,6 +646,7 @@ async fn sync_pull_respects_global_token_flag() {
     // Run with --token flag placed BEFORE the subcommand (global flag)
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(&space)
         .args(["--token", "override-token", "sync", "pull"])
         .assert()

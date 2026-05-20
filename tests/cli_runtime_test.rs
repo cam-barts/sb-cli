@@ -34,6 +34,7 @@ async fn lua_eval_returns_result_on_200() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "2 + 2"])
         .current_dir(dir.path())
         .assert()
@@ -56,6 +57,7 @@ async fn lua_eval_reports_lua_error() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "nil.foo"])
         .current_dir(dir.path())
         .assert()
@@ -70,6 +72,7 @@ async fn lua_unavailable_prints_docs_link() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "1 + 1"])
         .current_dir(dir.path())
         .assert()
@@ -95,6 +98,7 @@ async fn query_returns_table_format() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "query", "from tags.page limit 2"])
         .current_dir(dir.path())
         .assert()
@@ -121,6 +125,7 @@ async fn query_returns_json_format() {
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "query", "from tags.page limit 2"])
         .current_dir(dir.path())
         .assert()
@@ -141,6 +146,7 @@ async fn query_unavailable_prints_docs_link() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["query", "from tags.page"])
         .current_dir(dir.path())
         .assert()
@@ -167,6 +173,7 @@ async fn query_sends_correct_lua_script() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["query", "from tags.page limit 2"])
         .current_dir(dir.path())
         .assert()
@@ -194,6 +201,7 @@ async fn query_with_non_array_result_falls_back_to_json() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "query", "some_scalar_expr"])
         .current_dir(dir.path())
         .assert()

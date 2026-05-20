@@ -22,6 +22,7 @@ token = "secret123"
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .assert()
@@ -44,6 +45,7 @@ token = "secret123"
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["config", "show", "--reveal"])
         .current_dir(dir.path())
         .assert()
@@ -57,6 +59,7 @@ fn config_show_env_override() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .env("SB_SYNC_WORKERS", "8")
@@ -75,6 +78,7 @@ fn config_show_defaults_when_no_config() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
@@ -99,6 +103,7 @@ token = "secret123"
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "config", "show"])
         .current_dir(dir.path())
         .output()
@@ -130,6 +135,7 @@ token = "mysecrettoken"
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "config", "show", "--reveal"])
         .current_dir(dir.path())
         .output()
@@ -153,6 +159,7 @@ server_url = "https://sb.test"
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--quiet", "config", "show"])
         .current_dir(dir.path())
         .assert()

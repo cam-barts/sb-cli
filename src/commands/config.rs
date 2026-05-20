@@ -203,6 +203,7 @@ fn source_to_json_string(source: &ConfigSource) -> String {
     match source {
         ConfigSource::Default => "default".to_string(),
         ConfigSource::File => "config".to_string(),
+        ConfigSource::UserFile => "user config".to_string(),
         ConfigSource::Env(name) => format!("env: {name}"),
         ConfigSource::Flag(name) => format!("flag: {name}"),
     }

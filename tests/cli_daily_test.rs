@@ -28,9 +28,13 @@ fn default_space() -> TempDir {
 }
 
 /// Build an `sb` Command already configured to run from within the space dir.
+///
+/// Also pins `XDG_CONFIG_HOME` to a path that doesn't exist so the developer's
+/// real `~/.config/sb/config.toml` can't leak into the subprocess.
 fn sb_in(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary must exist");
-    cmd.current_dir(dir.path());
+    cmd.current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 

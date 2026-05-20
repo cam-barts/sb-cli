@@ -30,6 +30,7 @@ async fn server_ping_reports_reachability() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "server", "ping"])
         .current_dir(temp_dir.path())
         .assert()
@@ -48,6 +49,7 @@ async fn server_ping_uninitialized_fails() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["server", "ping"])
         .current_dir(temp_dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
@@ -76,6 +78,7 @@ async fn server_config_displays_fields() {
 
     Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "server", "config"])
         .current_dir(temp_dir.path())
         .assert()
@@ -105,6 +108,7 @@ async fn server_config_json_format() {
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["server", "config", "--format", "json"])
         .current_dir(temp_dir.path())
         .assert()
@@ -136,6 +140,7 @@ async fn server_ping_json_format() {
 
     let output = Command::cargo_bin("sb")
         .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["server", "ping", "--format", "json"])
         .current_dir(temp_dir.path())
         .assert()
