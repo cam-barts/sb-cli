@@ -52,6 +52,12 @@ jobs:
       COVERAGE_MIN_PCT: "80"
     steps:
       - uses: actions/checkout@v4
+        with:
+          # actions/checkout otherwise writes a basic-auth Authorization header
+          # for the default GITHUB_TOKEN into .git/config; that header wins
+          # over the App-token `remote set-url` further down and causes the
+          # badge push to be rejected by the `badges` ruleset.
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: llvm-tools-preview
