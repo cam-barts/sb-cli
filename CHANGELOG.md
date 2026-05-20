@@ -1,3 +1,9 @@
+## v1.4.1 (2026-05-20)
+
+### Fix
+
+- **ci**: unset persisted GITHUB_TOKEN on coverage checkout (#3)
+
 ## v1.4.0 (2026-05-20)
 
 ### Feat
