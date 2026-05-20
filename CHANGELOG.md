@@ -1,3 +1,9 @@
+## v1.4.0 (2026-05-20)
+
+### Feat
+
+- **config**: treat ~/.config/sb/config.toml as a full fallback config (#2)
+
 ## v1.3.2 (2026-05-19)
 
 ### Fix
