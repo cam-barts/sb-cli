@@ -1,3 +1,9 @@
+## v1.4.2 (2026-06-30)
+
+### Fix
+
+- **tls**: use native cert roots instead of bundled Mozilla roots (#4)
+
 ## v1.4.1 (2026-05-20)
 
 ### Fix
