@@ -1,3 +1,9 @@
+## v1.5.0 (2026-06-30)
+
+### Feat
+
+- **sync**: add --workers flag to override concurrency (#5)
+
 ## v1.4.2 (2026-06-30)
 
 ### Fix
