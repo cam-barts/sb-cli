@@ -193,28 +193,36 @@ async fn main() {
             })
             .await
         }
-        Some(Commands::Sync { command, dry_run }) => {
+        Some(Commands::Sync {
+            command,
+            dry_run,
+            workers,
+        }) => {
             debug!("dispatching: sync");
             match command {
                 Some(SyncCommands::Pull {
                     dry_run: sub_dry_run,
+                    workers: sub_workers,
                 }) => {
                     commands::sync::execute_pull(
                         cli.token.as_deref(),
                         cli.quiet,
                         &format,
                         dry_run || sub_dry_run,
+                        sub_workers.or(workers),
                     )
                     .await
                 }
                 Some(SyncCommands::Push {
                     dry_run: sub_dry_run,
+                    workers: sub_workers,
                 }) => {
                     commands::sync::execute_push(
                         cli.token.as_deref(),
                         cli.quiet,
                         &format,
                         dry_run || sub_dry_run,
+                        sub_workers.or(workers),
                     )
                     .await
                 }
@@ -248,7 +256,13 @@ async fn main() {
                         )
                         .await
                     } else {
-                        commands::sync::execute_sync(cli.token.as_deref(), cli.quiet, &format).await
+                        commands::sync::execute_sync(
+                            cli.token.as_deref(),
+                            cli.quiet,
+                            &format,
+                            workers,
+                        )
+                        .await
                     }
                 }
             }

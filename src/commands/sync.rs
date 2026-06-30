@@ -122,6 +122,7 @@ pub async fn execute_pull(
     quiet: bool,
     format: &OutputFormat,
     dry_run: bool,
+    workers_override: Option<u32>,
 ) -> SbResult<()> {
     let ctx = SyncContext::new(cli_token)?;
 
@@ -137,7 +138,7 @@ pub async fn execute_pull(
         return format_dry_run_output(&actions, format, quiet);
     }
 
-    let workers = ctx.config.sync_workers.value;
+    let workers = workers_override.unwrap_or(ctx.config.sync_workers.value);
     let show_progress = !quiet && crate::output::is_tty();
 
     let result = puller::pull(
@@ -176,6 +177,7 @@ pub async fn execute_push(
     quiet: bool,
     format: &OutputFormat,
     dry_run: bool,
+    workers_override: Option<u32>,
 ) -> SbResult<()> {
     let ctx = SyncContext::new(cli_token)?;
 
@@ -191,7 +193,7 @@ pub async fn execute_push(
         return format_dry_run_output(&actions, format, quiet);
     }
 
-    let workers = ctx.config.sync_workers.value;
+    let workers = workers_override.unwrap_or(ctx.config.sync_workers.value);
     let show_progress = !quiet && crate::output::is_tty();
 
     let result = pusher::push(
@@ -226,9 +228,10 @@ pub async fn execute_sync(
     cli_token: Option<&str>,
     quiet: bool,
     format: &OutputFormat,
+    workers_override: Option<u32>,
 ) -> SbResult<()> {
-    execute_pull(cli_token, quiet, format, false).await?;
-    execute_push(cli_token, quiet, format, false).await?;
+    execute_pull(cli_token, quiet, format, false, workers_override).await?;
+    execute_push(cli_token, quiet, format, false, workers_override).await?;
     Ok(())
 }
 
