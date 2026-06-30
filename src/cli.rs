@@ -137,6 +137,9 @@ pub enum Commands {
         /// Preview actions without executing
         #[arg(long)]
         dry_run: bool,
+        /// Number of concurrent upload/download workers (overrides config and SB_SYNC_WORKERS)
+        #[arg(long)]
+        workers: Option<u32>,
     },
     /// Evaluate a Space Lua expression via the Runtime API
     Lua {
@@ -207,12 +210,18 @@ pub enum SyncCommands {
         /// Preview actions without executing
         #[arg(long)]
         dry_run: bool,
+        /// Number of concurrent download workers (overrides config and SB_SYNC_WORKERS)
+        #[arg(long)]
+        workers: Option<u32>,
     },
     /// Push local changes to the server
     Push {
         /// Preview actions without executing
         #[arg(long)]
         dry_run: bool,
+        /// Number of concurrent upload workers (overrides config and SB_SYNC_WORKERS)
+        #[arg(long)]
+        workers: Option<u32>,
     },
     /// Show sync status (modified, new, deleted, conflicts)
     Status,
