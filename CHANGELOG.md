@@ -1,3 +1,9 @@
+## v1.6.0 (2026-07-01)
+
+### Feat
+
+- **daily**: add --task to capture journal entries as tasks (#6)
+
 ## v1.5.0 (2026-06-30)
 
 ### Feat
