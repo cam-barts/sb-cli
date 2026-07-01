@@ -285,3 +285,83 @@ fn daily_append_positive_offset_targets_future_date() {
         "note 2 days in future should be at {expected_filename}"
     );
 }
+
+// ============================================================================
+// Task entries (--task / --task-tag / --no-task-tag)
+// ============================================================================
+
+/// A space that forces task tagging on (taskTagMode = "always") so the write
+/// path is deterministic without needing a live runtime.
+fn task_space(mode: &str) -> TempDir {
+    setup_space(&format!(
+        "server_url = \"https://sb.example.com\"\n[sync]\ndir = \".\"\n[daily]\ntaskTagMode = \"{mode}\"\n"
+    ))
+}
+
+fn today_note(space: &TempDir) -> String {
+    let today = jiff::Zoned::now().date();
+    let note_path = space
+        .path()
+        .join(format!("Journal/{}.md", today.strftime("%Y-%m-%d")));
+    std::fs::read_to_string(&note_path).expect("read today's note")
+}
+
+#[test]
+fn daily_task_writes_checkbox_with_default_tag() {
+    let space = task_space("always");
+    sb_in(&space)
+        .args(["daily", "--task", "buy milk"])
+        .assert()
+        .success();
+
+    let content = today_note(&space);
+    assert!(
+        content.contains("[ ] ") && content.contains("buy milk") && content.contains("#task"),
+        "task line should be a checkbox tagged #task; got: {content:?}"
+    );
+}
+
+#[test]
+fn daily_task_no_task_tag_omits_tag() {
+    let space = task_space("always");
+    sb_in(&space)
+        .args(["daily", "--task", "--no-task-tag", "untagged task"])
+        .assert()
+        .success();
+
+    let content = today_note(&space);
+    assert!(
+        content.contains("[ ] ") && content.contains("untagged task"),
+        "should be a checkbox; got: {content:?}"
+    );
+    assert!(
+        !content.contains('#'),
+        "should carry no tag; got: {content:?}"
+    );
+}
+
+#[test]
+fn daily_task_tag_override_uses_given_tag() {
+    // --task-tag implies --task and overrides the configured default.
+    let space = task_space("never");
+    sb_in(&space)
+        .args(["daily", "--task-tag", "urgent", "ship it"])
+        .assert()
+        .success();
+
+    let content = today_note(&space);
+    assert!(
+        content.contains("[ ] ") && content.contains("ship it") && content.contains("#urgent"),
+        "task line should carry #urgent; got: {content:?}"
+    );
+}
+
+#[test]
+fn daily_task_without_text_is_usage_error() {
+    let space = task_space("always");
+    sb_in(&space)
+        .args(["daily", "--task"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("requires entry text"));
+}

@@ -179,6 +179,16 @@ fn print_human(config: &ResolvedConfig, reveal: bool) {
             source_annotation(&config.daily_template.source)
         );
     }
+    println!(
+        "taskTag = \"{}\"  {}",
+        config.daily_task_tag.value,
+        source_annotation(&config.daily_task_tag.source)
+    );
+    println!(
+        "taskTagMode = \"{}\"  {}",
+        config.daily_task_tag_mode.value,
+        source_annotation(&config.daily_task_tag_mode.source)
+    );
     println!();
 
     // [shell]
@@ -252,6 +262,8 @@ fn print_json(config: &ResolvedConfig, reveal: bool) {
         "daily": {
             "path": json_entry(&config.daily_path),
             "dateFormat": json_entry(&config.daily_date_format),
+            "taskTag": json_entry(&config.daily_task_tag),
+            "taskTagMode": json_entry(&config.daily_task_tag_mode),
         },
         "shell": {
             "enabled": json_entry(&config.shell_enabled),
