@@ -6,6 +6,7 @@ use jiff::civil::Date;
 
 use crate::cli::OutputFormat;
 use crate::commands::page::{find_space_root, open_in_editor, validate_page_path};
+use crate::commands::server::build_client;
 use crate::config::ResolvedConfig;
 use crate::error::{SbError, SbResult};
 use crate::output;
@@ -154,11 +155,24 @@ pub fn extract_tags(s: &str) -> Vec<String> {
 
 /// Format a journal entry as a SilverBullet bullet line.
 ///
-/// Multi-line bodies use 2-space continuation indentation so the whole entry
-/// remains a single bullet item.
-pub fn format_entry(time: Option<&str>, star: bool, bullet: char, body: &str) -> String {
+/// When `task` is true the line becomes a checkbox item (`* [ ] ...`) so
+/// SilverBullet indexes it as a task; `tag` (without a leading `#`), when set,
+/// is appended to the first line as a `#tag` so tag-gated task indexing picks
+/// it up. Multi-line bodies use 2-space continuation indentation so the whole
+/// entry remains a single bullet item.
+pub fn format_entry(
+    time: Option<&str>,
+    star: bool,
+    bullet: char,
+    body: &str,
+    task: bool,
+    tag: Option<&str>,
+) -> String {
     let body = body.trim();
     let mut prefix = String::new();
+    if task {
+        prefix.push_str("[ ] ");
+    }
     if let Some(t) = time {
         prefix.push_str(&format!("[time:: {}] ", t));
     }
@@ -168,6 +182,12 @@ pub fn format_entry(time: Option<&str>, star: bool, bullet: char, body: &str) ->
     let mut lines = body.lines();
     let first = lines.next().unwrap_or("");
     let mut out = format!("{} {}{}", bullet, prefix, first);
+    if let Some(tag) = tag {
+        let tag = tag.trim().trim_start_matches('#');
+        if !tag.is_empty() {
+            out.push_str(&format!(" #{}", tag));
+        }
+    }
     for line in lines {
         out.push('\n');
         out.push_str("  ");
@@ -417,6 +437,9 @@ pub struct DailyArgs<'a> {
     pub star: bool,
     pub time: Option<&'a str>,
     pub no_time: bool,
+    pub task: bool,
+    pub task_tag: Option<&'a str>,
+    pub no_task_tag: bool,
     pub append: Option<&'a str>,
     pub limit: Option<usize>,
     pub from: Option<&'a str>,
@@ -521,7 +544,16 @@ async fn execute_write_or_editor(
     );
     let page_path = validate_page_path(space_root, &page_name)?;
 
+    // --task (and the tag override flags, which imply it) require a body: a task
+    // with no text is meaningless, so we never fall through to the editor.
+    let is_task = args.task || args.task_tag.is_some() || args.no_task_tag;
+
     if entry_text.is_empty() {
+        if is_task {
+            return Err(SbError::Usage(
+                "--task requires entry text (a task needs a body)".into(),
+            ));
+        }
         let created = ensure_day_file(&page_path, space_root, config, args.cli_token).await?;
         if created {
             output::print_success(&format!("Created {}", page_name), args.color, args.quiet);
@@ -553,7 +585,19 @@ async fn execute_write_or_editor(
         .chars()
         .next()
         .unwrap_or('*');
-    let entry_md = format_entry(time_str.as_deref(), args.star, bullet_char, &entry_text);
+    let task_tag = if is_task {
+        resolve_task_tag(config, args).await
+    } else {
+        None
+    };
+    let entry_md = format_entry(
+        time_str.as_deref(),
+        args.star,
+        bullet_char,
+        &entry_text,
+        is_task,
+        task_tag.as_deref(),
+    );
 
     append_entry(&page_path, &entry_md)?;
     output::print_success(
@@ -562,6 +606,62 @@ async fn execute_write_or_editor(
         args.quiet,
     );
     Ok(())
+}
+
+/// Resolve the tag to append to a task line.
+///
+/// Precedence: `--no-task-tag` (none) > `--task-tag <TAG>` > `daily.taskTagMode`.
+/// In `auto` mode the space's `index.task.all` setting is read: SilverBullet
+/// indexes only tagged tasks when it is `false`, so we tag then and leave the
+/// task bare when it is `true`. If the setting cannot be read we tag anyway,
+/// since a tagged task is indexed under either setting.
+async fn resolve_task_tag(config: &ResolvedConfig, args: &DailyArgs<'_>) -> Option<String> {
+    if args.no_task_tag {
+        return None;
+    }
+    if let Some(tag) = args.task_tag {
+        return Some(tag.to_string());
+    }
+
+    let default_tag = config.daily_task_tag.value.clone();
+    match config.daily_task_tag_mode.value.as_str() {
+        "never" => None,
+        "always" => Some(default_tag),
+        _ => match fetch_index_task_all(config, args.cli_token).await {
+            Some(true) => None,
+            Some(false) => Some(default_tag),
+            None => {
+                if !args.quiet {
+                    eprintln!(
+                        "note: could not read index.task.all; tagging task with #{} to ensure it is indexed",
+                        default_tag
+                    );
+                }
+                Some(default_tag)
+            }
+        },
+    }
+}
+
+/// Read the space's `index.task.all` setting via the runtime Lua endpoint.
+///
+/// Returns `None` when the runtime is unavailable or the request/parse fails,
+/// so callers can fall back rather than failing the write.
+async fn fetch_index_task_all(config: &ResolvedConfig, cli_token: Option<&str>) -> Option<bool> {
+    if !config.runtime_available.value {
+        return None;
+    }
+    let client = build_client(cli_token).ok()?;
+    let resp = client
+        .post_text("/.runtime/lua", "config.get(\"index.task.all\", true)")
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body = resp.text().await.ok()?;
+    let parsed: serde_json::Value = serde_json::from_str(&body).ok()?;
+    parsed.get("result")?.as_bool()
 }
 
 /// Filters resolved from CLI flags, applied during read mode.
@@ -845,25 +945,25 @@ mod tests {
 
     #[test]
     fn format_entry_single_line_with_time() {
-        let s = format_entry(Some("14:32"), false, '*', "Wrote the plan");
+        let s = format_entry(Some("14:32"), false, '*', "Wrote the plan", false, None);
         assert_eq!(s, "* [time:: 14:32] Wrote the plan");
     }
 
     #[test]
     fn format_entry_with_star() {
-        let s = format_entry(Some("15:10"), true, '*', "Lunch with Sam");
+        let s = format_entry(Some("15:10"), true, '*', "Lunch with Sam", false, None);
         assert_eq!(s, "* [time:: 15:10] [starred:: true] Lunch with Sam");
     }
 
     #[test]
     fn format_entry_no_time() {
-        let s = format_entry(None, false, '*', "Quick note");
+        let s = format_entry(None, false, '*', "Quick note", false, None);
         assert_eq!(s, "* Quick note");
     }
 
     #[test]
     fn format_entry_dash_bullet() {
-        let s = format_entry(Some("08:00"), false, '-', "Morning standup");
+        let s = format_entry(Some("08:00"), false, '-', "Morning standup", false, None);
         assert_eq!(s, "- [time:: 08:00] Morning standup");
     }
 
@@ -874,11 +974,49 @@ mod tests {
             false,
             '*',
             "First line\nSecond line\nThird line",
+            false,
+            None,
         );
         assert_eq!(
             s,
             "* [time:: 16:45] First line\n  Second line\n  Third line"
         );
+    }
+
+    #[test]
+    fn format_entry_task_with_tag() {
+        // Checkbox sits immediately after the bullet; the tag is appended at end
+        // of the first line so tag-gated task indexing picks it up.
+        let s = format_entry(Some("14:32"), false, '*', "Buy milk", true, Some("task"));
+        assert_eq!(s, "* [ ] [time:: 14:32] Buy milk #task");
+    }
+
+    #[test]
+    fn format_entry_task_without_tag() {
+        let s = format_entry(Some("14:32"), false, '*', "Buy milk", true, None);
+        assert_eq!(s, "* [ ] [time:: 14:32] Buy milk");
+    }
+
+    #[test]
+    fn format_entry_task_with_star_and_no_time() {
+        let s = format_entry(None, true, '-', "Ship it", true, Some("todo"));
+        assert_eq!(s, "- [ ] [starred:: true] Ship it #todo");
+    }
+
+    #[test]
+    fn format_entry_tag_strips_leading_hash_and_ignores_empty() {
+        // A user-supplied tag may include a leading '#'; it is normalized to one.
+        let s = format_entry(None, false, '*', "x", true, Some("#urgent"));
+        assert_eq!(s, "* [ ] x #urgent");
+        // An empty/whitespace tag produces no trailing hash.
+        let s = format_entry(None, false, '*', "x", true, Some("  "));
+        assert_eq!(s, "* [ ] x");
+    }
+
+    #[test]
+    fn format_entry_task_multi_line_tags_only_first_line() {
+        let s = format_entry(None, false, '*', "line one\nline two", true, Some("task"));
+        assert_eq!(s, "* [ ] line one #task\n  line two");
     }
 
     #[test]
@@ -1209,7 +1347,7 @@ mod tests {
     fn append_entry_multi_line_continuation_is_preserved() {
         let tmp = tempfile::tempdir().unwrap();
         let p = write_test_file(tmp.path(), "day.md", "* [time:: 08:00] first\n");
-        let multi = format_entry(Some("09:00"), false, '*', "line one\nline two");
+        let multi = format_entry(Some("09:00"), false, '*', "line one\nline two", false, None);
         append_entry(&p, &multi).unwrap();
         let got = std::fs::read_to_string(&p).unwrap();
         assert_eq!(
@@ -1398,6 +1536,9 @@ dateFormat = "%Y-%m-%d"
             star: false,
             time: None,
             no_time: false,
+            task: false,
+            task_tag: None,
+            no_task_tag: false,
             append: None,
             limit: None,
             from: None,
@@ -1767,5 +1908,136 @@ template = "Daily"
             .await
             .unwrap();
         assert!(got.is_none());
+    }
+
+    // --- task tag resolution ---
+
+    /// Build a config with explicit task-tag settings (no network involved).
+    fn task_config(space_root: &std::path::Path, mode: &str, tag: &str) -> ResolvedConfig {
+        std::fs::create_dir_all(space_root.join(".sb")).unwrap();
+        std::fs::write(
+            space_root.join(".sb").join("config.toml"),
+            format!(
+                "[daily]\npath = \"Journal/{{{{date}}}}\"\ntaskTagMode = \"{mode}\"\ntaskTag = \"{tag}\"\n"
+            ),
+        )
+        .unwrap();
+        ResolvedConfig::load_from(space_root).unwrap()
+    }
+
+    #[tokio::test]
+    async fn resolve_task_tag_no_task_tag_flag_wins() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = task_config(tmp.path(), "always", "task");
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.task = true;
+        args.no_task_tag = true;
+        assert_eq!(resolve_task_tag(&config, &args).await, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_task_tag_explicit_flag_overrides_config() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = task_config(tmp.path(), "never", "task");
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.task = true;
+        args.task_tag = Some("urgent");
+        assert_eq!(
+            resolve_task_tag(&config, &args).await,
+            Some("urgent".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_task_tag_mode_never_and_always() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.task = true;
+
+        let never = task_config(tmp.path(), "never", "task");
+        assert_eq!(resolve_task_tag(&never, &args).await, None);
+
+        let always = task_config(tmp.path(), "always", "todo");
+        assert_eq!(
+            resolve_task_tag(&always, &args).await,
+            Some("todo".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_task_tag_auto_tags_when_index_task_all_false() {
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":false}"#))
+            .mount(&server)
+            .await;
+
+        let tmp = make_space(Some(&server.uri()));
+        crate::config::update_config_value(&tmp.path().join(".sb"), "daily", "taskTagMode", "auto")
+            .unwrap();
+        crate::config::update_config_value(&tmp.path().join(".sb"), "runtime", "available", true)
+            .unwrap();
+        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.task = true;
+        // index.task.all == false => only tagged tasks are indexed => apply the tag.
+        assert_eq!(
+            resolve_task_tag(&config, &args).await,
+            Some("task".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_task_tag_auto_no_tag_when_index_task_all_true() {
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/.runtime/lua"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":true}"#))
+            .mount(&server)
+            .await;
+
+        let tmp = make_space(Some(&server.uri()));
+        crate::config::update_config_value(&tmp.path().join(".sb"), "daily", "taskTagMode", "auto")
+            .unwrap();
+        crate::config::update_config_value(&tmp.path().join(".sb"), "runtime", "available", true)
+            .unwrap();
+        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
+        let _g = SbSpaceGuard::set(tmp.path());
+
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.task = true;
+        // index.task.all == true => all tasks indexed => leave it bare.
+        assert_eq!(resolve_task_tag(&config, &args).await, None);
+    }
+
+    #[tokio::test]
+    async fn resolve_task_tag_auto_falls_back_to_tag_when_runtime_unavailable() {
+        // runtime.available defaults to false; no network is attempted and we
+        // fall back to tagging so the task is indexed under either setting.
+        let tmp = tempfile::tempdir().unwrap();
+        let config = task_config(tmp.path(), "auto", "task");
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.task = true;
+        assert_eq!(
+            resolve_task_tag(&config, &args).await,
+            Some("task".to_string())
+        );
     }
 }

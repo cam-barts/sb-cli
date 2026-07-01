@@ -107,6 +107,11 @@ sb daily --star celebrated finishing the cutover
 sb daily --time 09:00 morning standup
 sb daily --no-time todo: pick up groceries
 
+# Capture the entry as a task (checkbox item): "* [ ] ... #task"
+sb daily --task follow up with the vendor
+sb daily --task-tag urgent patch the auth bug   # override the tag (implies --task)
+sb daily --task --no-task-tag just a plain checkbox
+
 # Listing/filtering past entries — any view flag switches read mode
 sb daily -n 5
 sb daily --from 2026-05-01 --contains migration
@@ -129,7 +134,7 @@ all flags above work unchanged.
 | `sb page delete <name>` | Delete a page (`--force` to skip confirmation) |
 | `sb page append <name>` | Append content to a page (`--content`) |
 | `sb page move <from> <to>` | Rename or move a page |
-| `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
+| `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`, `--task`, `--task-tag`, `--no-task-tag`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
 | `sb sync` | Bidirectional sync: pull then push (`--dry-run`) |
 | `sb sync pull` | Pull changes from server (`--dry-run`) |
 | `sb sync push` | Push local changes to server (`--dry-run`) |
@@ -178,6 +183,8 @@ dateFormat = "%Y-%m-%d"    # Date format string (default: "%Y-%m-%d")
 template = "Daily"         # Template page name (optional)
 timeFormat = "%H:%M"       # Time format used for [time:: ...] attributes (default: "%H:%M")
 bulletStyle = "*"          # Bullet character for journal entries: "*" or "-" (default: "*")
+taskTag = "task"           # Tag applied to --task entries (default: "task")
+taskTagMode = "auto"       # When to tag tasks: "auto" | "always" | "never" (default: "auto")
 
 [shell]
 enabled = false            # Enable shell endpoint access (default: false)
@@ -188,6 +195,13 @@ keychain = false           # Use OS keychain for token storage (default: false)
 [runtime]
 available = false          # Runtime API available on server (default: false)
 ```
+
+With `taskTagMode = "auto"` (the default), `sb daily --task` reads the space's
+`index.task.all` setting via the Runtime API and applies `taskTag` only when task
+indexing is tag-gated (`index.task.all = false`), leaving the task bare otherwise.
+If the Runtime API is unavailable it falls back to tagging, since a tagged task is
+indexed under either setting. Use `always`/`never` to pin the behaviour, or the
+per-entry `--task-tag <TAG>` / `--no-task-tag` flags to override a single entry.
 
 ### Precedence (highest wins)
 

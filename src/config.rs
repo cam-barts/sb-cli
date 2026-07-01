@@ -39,6 +39,10 @@ pub struct DailyConfigFile {
     pub time_format: Option<String>,
     #[serde(rename = "bulletStyle")]
     pub bullet_style: Option<String>,
+    #[serde(rename = "taskTag")]
+    pub task_tag: Option<String>,
+    #[serde(rename = "taskTagMode")]
+    pub task_tag_mode: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -110,6 +114,8 @@ pub struct ResolvedConfig {
     pub daily_template: ResolvedValue<Option<String>>,
     pub daily_time_format: ResolvedValue<String>,
     pub daily_bullet_style: ResolvedValue<String>,
+    pub daily_task_tag: ResolvedValue<String>,
+    pub daily_task_tag_mode: ResolvedValue<String>,
     pub shell_enabled: ResolvedValue<bool>,
     pub auth_keychain: ResolvedValue<bool>,
     pub runtime_available: ResolvedValue<bool>,
@@ -278,6 +284,29 @@ impl ResolvedConfig {
                 ),
             });
         }
+        let daily_task_tag = Self::resolve_string(
+            "SB_DAILY_TASK_TAG",
+            config_file.daily.task_tag,
+            user_config.daily.task_tag,
+            "task".to_string(),
+        );
+        let daily_task_tag_mode = Self::resolve_string(
+            "SB_DAILY_TASK_TAG_MODE",
+            config_file.daily.task_tag_mode,
+            user_config.daily.task_tag_mode,
+            "auto".to_string(),
+        );
+        if !matches!(
+            daily_task_tag_mode.value.as_str(),
+            "auto" | "always" | "never"
+        ) {
+            return Err(SbError::Config {
+                message: format!(
+                    "invalid daily.taskTagMode: {:?} (expected \"auto\", \"always\", or \"never\")",
+                    daily_task_tag_mode.value
+                ),
+            });
+        }
 
         let shell_enabled = Self::resolve_bool(
             "SB_SHELL_ENABLED",
@@ -311,6 +340,8 @@ impl ResolvedConfig {
             daily_template,
             daily_time_format,
             daily_bullet_style,
+            daily_task_tag,
+            daily_task_tag_mode,
             shell_enabled,
             auth_keychain,
             runtime_available,
@@ -1175,6 +1206,54 @@ bulletStyle = "+"
                 assert!(
                     message.contains("bulletStyle"),
                     "expected message to mention bulletStyle, got: {message}"
+                );
+            }
+            other => panic!("expected Config error, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn daily_task_tag_defaults() {
+        let _g = EnvTestGuard::new();
+        let dir = tempfile::tempdir().expect("create tempdir");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert_eq!(config.daily_task_tag.value, "task");
+        assert_eq!(config.daily_task_tag.source, ConfigSource::Default);
+        assert_eq!(config.daily_task_tag_mode.value, "auto");
+        assert_eq!(config.daily_task_tag_mode.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn daily_task_tag_loads_from_file() {
+        let _g = EnvTestGuard::new();
+        let dir = setup_config_dir(
+            r#"
+[daily]
+taskTag = "todo"
+taskTagMode = "always"
+"#,
+        );
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert_eq!(config.daily_task_tag.value, "todo");
+        assert_eq!(config.daily_task_tag.source, ConfigSource::File);
+        assert_eq!(config.daily_task_tag_mode.value, "always");
+    }
+
+    #[test]
+    fn daily_task_tag_mode_invalid_value_errors() {
+        let _g = EnvTestGuard::new();
+        let dir = setup_config_dir(
+            r#"
+[daily]
+taskTagMode = "sometimes"
+"#,
+        );
+        let err = ResolvedConfig::load_from(dir.path()).unwrap_err();
+        match err {
+            SbError::Config { message } => {
+                assert!(
+                    message.contains("taskTagMode"),
+                    "expected message to mention taskTagMode, got: {message}"
                 );
             }
             other => panic!("expected Config error, got: {other:?}"),

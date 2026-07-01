@@ -104,6 +104,15 @@ pub enum Commands {
         /// Omit the time attribute on this entry
         #[arg(long, conflicts_with = "time")]
         no_time: bool,
+        /// Write the entry as a task (checkbox item: `* [ ] ...`)
+        #[arg(long)]
+        task: bool,
+        /// Tag applied to the task (implies --task; overrides the configured default)
+        #[arg(long, value_name = "TAG", conflicts_with = "no_task_tag")]
+        task_tag: Option<String>,
+        /// Suppress the task tag for this entry (implies --task)
+        #[arg(long)]
+        no_task_tag: bool,
         /// Legacy synonym for the positional entry (kept for back-compat)
         #[arg(long, value_name = "TEXT")]
         append: Option<String>,
