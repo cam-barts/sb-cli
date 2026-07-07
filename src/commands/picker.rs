@@ -5,8 +5,6 @@
 //! Callers (template selection, `page edit`/`read`/`delete` without an explicit
 //! name, …) supply the item list plus a short noun for messages.
 
-use std::io::IsTerminal;
-
 use crate::error::{SbError, SbResult};
 
 /// Present `items` and return the chosen one, or `None` if the user cancels.
@@ -21,7 +19,7 @@ pub async fn pick(items: &[String], noun: &str) -> SbResult<Option<String>> {
             "no {noun}s available to choose from"
         )));
     }
-    if !std::io::stdin().is_terminal() {
+    if crate::output::no_input() {
         return Err(SbError::Usage(format!(
             "cannot pick a {noun} in non-interactive mode; pass one explicitly"
         )));

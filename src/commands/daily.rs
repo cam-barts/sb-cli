@@ -336,7 +336,7 @@ use crate::commands::template::fetch_template_content;
 /// Ensure the day's note file exists. Creates parent dirs and applies the
 /// configured template if the file is being created for the first time.
 /// Returns `true` when the file was just created.
-async fn ensure_day_file(
+pub(crate) async fn ensure_day_file(
     page_path: &Path,
     content_dir: &Path,
     config: &ResolvedConfig,
@@ -369,7 +369,7 @@ async fn ensure_day_file(
 
 /// Append a formatted entry to the day's note, prefixing with a newline when
 /// the file already has trailing content.
-fn append_entry(page_path: &Path, entry_md: &str) -> SbResult<()> {
+pub(crate) fn append_entry(page_path: &Path, entry_md: &str) -> SbResult<()> {
     let needs_leading_newline = std::fs::metadata(page_path)
         .map(|m| m.len() > 0)
         .unwrap_or(false)
@@ -526,6 +526,12 @@ async fn execute_write_or_editor(
         let created = ensure_day_file(&page_path, space_root, config, args.cli_token).await?;
         if created {
             output::print_success(&format!("Created {}", page_name), args.color, args.quiet);
+        }
+        // Opening the note in $EDITOR is the interactive default; when running
+        // non-interactively the note is already ensured to exist, so we stop
+        // here instead of blocking a script on an editor it cannot drive.
+        if crate::output::no_input() {
+            return Ok(());
         }
         return open_in_editor(&page_path).await;
     }

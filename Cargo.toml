@@ -9,13 +9,43 @@ readme = "README.md"
 keywords = ["silverbullet", "cli", "sync", "notes", "markdown"]
 categories = ["command-line-utilities"]
 
+# Let `cargo binstall sb-cli` fetch the prebuilt release tarball instead of
+# compiling. Points at this repo's own GitHub-release assets (slim flavor);
+# `sb upgrade` handles flavor-aware in-place updates thereafter.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/sb-v{ version }-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "sb"
 path = "src/main.rs"
 
+[features]
+# Slim by default: zero AI/agent surface, no heavy deps.
+default = []
+# Umbrella opt-in for everything agent-facing.
+ai = ["skills", "mcp"]
+# `sb schema` + `sb skills init` — writes agent instruction files. No heavy deps.
+skills = []
+# `sb mcp serve` — exposes sb as an MCP server. Pulls the rmcp SDK (+ axum for
+# the optional Streamable HTTP transport; stdio needs neither axum nor tokio/net).
+mcp = ["dep:rmcp", "dep:schemars", "dep:axum", "tokio/net"]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
+rmcp = { version = "2", optional = true, features = [
+    "server",
+    "macros",
+    "transport-io",
+    "transport-streamable-http-server",
+] }
+schemars = { version = "1", optional = true }
+axum = { version = "0.8", optional = true }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "fs", "time"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots"], default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
@@ -35,6 +65,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1.11.1"
 percent-encoding = "2.3"
+# `sb upgrade` self-update from GitHub releases. rustls to match reqwest above;
+# tar.gz (unix) + zip (windows) to match the release archive formats.
+self_update = { version = "0.44", default-features = false, features = [
+    "reqwest",
+    "rustls",
+    "archive-tar",
+    "compression-flate2",
+    "archive-zip",
+    "compression-zip-deflate",
+] }
 
 [dev-dependencies]
 wiremock = "0.6"

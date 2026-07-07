@@ -228,6 +228,7 @@ fn format_system_time_iso(t: std::time::SystemTime) -> String {
 pub async fn execute_list(
     sort: &SortField,
     limit: Option<usize>,
+    fields: &[String],
     format: &OutputFormat,
     quiet: bool,
     color: bool,
@@ -279,9 +280,13 @@ pub async fn execute_list(
                     modified: format_system_time_iso(e.modified_time),
                 })
                 .collect();
+            let value = serde_json::to_value(&json_entries).map_err(|e| SbError::Config {
+                message: format!("failed to serialize page list: {e}"),
+            })?;
+            let value = crate::output::filter_json_fields(&value, fields);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&json_entries).map_err(|e| {
+                serde_json::to_string_pretty(&value).map_err(|e| {
                     SbError::Config {
                         message: format!("failed to serialize page list: {e}"),
                     }
@@ -314,7 +319,7 @@ pub async fn execute_list(
 
 /// Collect all page names in the content dir, sorted. Backs the interactive
 /// picker used when a page-name argument is omitted.
-fn list_page_names(content_dir: &Path) -> SbResult<Vec<String>> {
+pub(crate) fn list_page_names(content_dir: &Path) -> SbResult<Vec<String>> {
     let mut names: Vec<String> = collect_pages(content_dir)?
         .into_iter()
         .map(|e| e.name)
@@ -390,6 +395,7 @@ pub async fn execute_create(
     content: Option<&str>,
     edit: bool,
     template: Option<&str>,
+    upsert: bool,
     _format: &OutputFormat,
     quiet: bool,
     color: bool,
@@ -399,8 +405,9 @@ pub async fn execute_create(
     let content_dir = find_content_dir()?;
     let page_path = validate_page_path(&content_dir, name)?;
 
-    // Duplicate check
-    if page_path.exists() {
+    // Duplicate check — with --upsert an existing page is overwritten instead
+    // of being a conflict, giving agents a safe, idempotent create.
+    if page_path.exists() && !upsert {
         return Err(SbError::PageAlreadyExists {
             name: name.to_string(),
         });
@@ -464,7 +471,9 @@ pub async fn execute_create(
         source: Some(e),
     })?;
 
-    if open_editor {
+    // The editor is a convenience after creation; skip it (page is already
+    // written) when running non-interactively so agents/scripts never block.
+    if open_editor && !crate::output::no_input() {
         open_in_editor(&page_path).await?;
     }
 
@@ -487,20 +496,20 @@ pub async fn execute_edit(name: Option<&str>, quiet: bool, _color: bool) -> SbRe
     if !page_path.exists() {
         return Err(SbError::PageNotFound { name });
     }
+    // Editing *is* the operation here, so there's nothing useful to do without
+    // an interactive $EDITOR — fail clearly rather than launching into a pipe.
+    if crate::output::no_input() {
+        return Err(SbError::Usage(format!(
+            "cannot edit '{name}' in non-interactive mode ($EDITOR needs a terminal)"
+        )));
+    }
     open_in_editor(&page_path).await?;
     Ok(())
 }
 
-/// Prompt user for delete confirmation on a TTY.
-///
-/// Non-TTY stdin without --force is a fail-safe: refuse deletion to prevent
-/// scripted deletion without explicit opt-in.
+/// Prompt user for delete confirmation on a TTY. Only called when interactive
+/// input is available; the non-interactive fail-safe lives in `execute_delete`.
 async fn confirm_delete(name: &str) -> SbResult<bool> {
-    if !std::io::stdin().is_terminal() {
-        return Err(SbError::Usage(
-            "cannot confirm deletion in non-interactive mode; use --force".into(),
-        ));
-    }
     let name = name.to_string();
     let confirmed = tokio::task::spawn_blocking(move || -> bool {
         use std::io::Write;
@@ -524,6 +533,7 @@ async fn confirm_delete(name: &str) -> SbResult<bool> {
 pub async fn execute_delete(
     name: Option<&str>,
     force: bool,
+    dry_run: bool,
     quiet: bool,
     color: bool,
 ) -> SbResult<()> {
@@ -539,7 +549,22 @@ pub async fn execute_delete(
     if !page_path.exists() {
         return Err(SbError::PageNotFound { name });
     }
-    if !force {
+    // --dry-run previews without touching the filesystem or prompting, so an
+    // agent can rehearse a destructive op safely.
+    if dry_run {
+        output::print_success(&format!("[dry-run] would delete {name}"), color, quiet);
+        return Ok(());
+    }
+    if !(force || output::assume_yes()) {
+        // Non-interactive without an explicit opt-in: return a confirmation
+        // envelope (exit 6) with the exact command to re-run, so an agent can
+        // self-correct instead of stalling on a prompt it cannot answer.
+        if output::no_input() {
+            return Err(SbError::ConfirmationRequired {
+                action: format!("delete page '{name}'"),
+                rerun: format!("sb page delete {name} --yes"),
+            });
+        }
         let confirmed = confirm_delete(&name).await?;
         if !confirmed {
             output::print_success("Cancelled", color, quiet);
@@ -596,7 +621,13 @@ pub async fn execute_append(name: &str, content: &str, quiet: bool, color: bool)
 }
 
 /// Move/rename a page, creating intermediate directories for the target.
-pub async fn execute_move(name: &str, new_name: &str, quiet: bool, color: bool) -> SbResult<()> {
+pub async fn execute_move(
+    name: &str,
+    new_name: &str,
+    dry_run: bool,
+    quiet: bool,
+    color: bool,
+) -> SbResult<()> {
     let space_root = find_space_root()?;
     let content_dir = find_content_dir()?;
     let src_path = validate_page_path(&content_dir, name)?;
@@ -610,6 +641,15 @@ pub async fn execute_move(name: &str, new_name: &str, quiet: bool, color: bool) 
         return Err(SbError::PageAlreadyExists {
             name: new_name.to_string(),
         });
+    }
+    // --dry-run previews the rename after validation without moving anything.
+    if dry_run {
+        output::print_success(
+            &format!("[dry-run] would move {name} -> {new_name}"),
+            color,
+            quiet,
+        );
+        return Ok(());
     }
     // Create intermediate directories for destination
     if let Some(parent) = dst_path.parent() {
@@ -828,9 +868,16 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "Notes", "# Notes");
             seed_page(tmp.path(), "Journal/2026-01-01", "# Day one");
-            execute_list(&SortField::Name, None, &OutputFormat::Human, true, false)
-                .await
-                .expect("list");
+            execute_list(
+                &SortField::Name,
+                None,
+                &[],
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .expect("list");
         }
 
         #[tokio::test]
@@ -840,9 +887,16 @@ mod tests {
             for i in 0..5 {
                 seed_page(tmp.path(), &format!("p{i}"), "x");
             }
-            execute_list(&SortField::Name, Some(2), &OutputFormat::Json, true, false)
-                .await
-                .expect("list with limit");
+            execute_list(
+                &SortField::Name,
+                Some(2),
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("list with limit");
         }
 
         #[tokio::test]
@@ -851,9 +905,16 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "a", "x");
             seed_page(tmp.path(), "b", "y");
-            execute_list(&SortField::Modified, None, &OutputFormat::Json, true, false)
-                .await
-                .expect("sort modified");
+            execute_list(
+                &SortField::Modified,
+                None,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("sort modified");
         }
 
         #[tokio::test]
@@ -861,9 +922,16 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "a", "x");
-            execute_list(&SortField::Created, None, &OutputFormat::Json, true, false)
-                .await
-                .expect("sort created");
+            execute_list(
+                &SortField::Created,
+                None,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("sort created");
         }
 
         // --- execute_read ---
@@ -946,6 +1014,7 @@ mod tests {
                 Some("# Hello"),
                 false,
                 None,
+                false,
                 &OutputFormat::Human,
                 true,
                 false,
@@ -967,6 +1036,7 @@ mod tests {
                 Some("ignored"),
                 false,
                 None,
+                false,
                 &OutputFormat::Human,
                 true,
                 false,
@@ -986,6 +1056,7 @@ mod tests {
                 Some("body"),
                 false,
                 None,
+                false,
                 &OutputFormat::Human,
                 true,
                 false,
@@ -1013,7 +1084,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "ToDelete", "x");
-            execute_delete(Some("ToDelete"), true, true, false)
+            execute_delete(Some("ToDelete"), true, false, true, false)
                 .await
                 .expect("delete force");
             assert!(!tmp.path().join("ToDelete.md").exists());
@@ -1023,7 +1094,7 @@ mod tests {
         async fn delete_errors_when_page_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_delete(Some("Missing"), true, true, false)
+            let err = execute_delete(Some("Missing"), true, false, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::PageNotFound { .. }));
@@ -1061,7 +1132,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "OldName", "body");
-            execute_move("OldName", "NewName", true, false)
+            execute_move("OldName", "NewName", false, true, false)
                 .await
                 .expect("move");
             assert!(!tmp.path().join("OldName.md").exists());
@@ -1072,7 +1143,7 @@ mod tests {
         async fn move_errors_when_source_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_move("Ghost", "Other", true, false)
+            let err = execute_move("Ghost", "Other", false, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::PageNotFound { .. }));
@@ -1084,7 +1155,9 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "A", "x");
             seed_page(tmp.path(), "B", "y");
-            let err = execute_move("A", "B", true, false).await.unwrap_err();
+            let err = execute_move("A", "B", false, true, false)
+                .await
+                .unwrap_err();
             assert!(matches!(err, SbError::PageAlreadyExists { .. }));
         }
 
@@ -1093,7 +1166,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "Flat", "x");
-            execute_move("Flat", "Subdir/Nested", true, false)
+            execute_move("Flat", "Subdir/Nested", false, true, false)
                 .await
                 .expect("move nested");
             assert!(tmp.path().join("Subdir").join("Nested.md").is_file());

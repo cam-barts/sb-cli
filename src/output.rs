@@ -1,5 +1,34 @@
 use console::Style;
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-global interaction flags, set once in `main` from `--no-input`/`--yes`
+/// (mirroring how color is a process-global toggle). Interactive helpers consult
+/// these instead of every command threading the flags through its signature.
+static NO_INPUT: AtomicBool = AtomicBool::new(false);
+static ASSUME_YES: AtomicBool = AtomicBool::new(false);
+
+/// Record the `--no-input` flag. Call once during startup.
+pub fn set_no_input(value: bool) {
+    NO_INPUT.store(value, Ordering::Relaxed);
+}
+
+/// Record the `--yes`/`--force`-style assume-yes flag. Call once during startup.
+pub fn set_assume_yes(value: bool) {
+    ASSUME_YES.store(value, Ordering::Relaxed);
+}
+
+/// True when interaction is disabled: `--no-input` was passed, or stdin is not a
+/// terminal (an agent/pipe can't answer a prompt either way).
+pub fn no_input() -> bool {
+    NO_INPUT.load(Ordering::Relaxed) || !std::io::stdin().is_terminal()
+}
+
+/// True when destructive operations should proceed without an interactive
+/// confirmation (the user passed `--yes` or a command-level `--force`).
+pub fn assume_yes() -> bool {
+    ASSUME_YES.load(Ordering::Relaxed)
+}
 
 /// Central output configuration derived from CLI flags and environment
 pub struct OutputConfig {
@@ -54,10 +83,58 @@ pub fn resolve_format(explicit: Option<crate::cli::OutputFormat>) -> crate::cli:
     }
 }
 
-/// Print an error with colored "error:" prefix and optional hint.
-/// Output goes to stderr.
-pub fn print_error(error: &crate::error::SbError, color: bool) {
-    eprintln!("{}", format_error(error, color));
+/// Print an error to stderr. In `Human` mode this is a colored `error:` line
+/// with the source chain and an optional hint; in `Json` mode it is a single
+/// structured object `{ "error", "code", "remediation" }` so an agent gets a
+/// parseable failure body in addition to the process exit code. Errors always
+/// go to stderr, never stdout, so a piped `--format json` data stream stays
+/// clean even on failure.
+pub fn print_error(error: &crate::error::SbError, color: bool, format: &crate::cli::OutputFormat) {
+    match format {
+        crate::cli::OutputFormat::Json => eprintln!("{}", format_error_json(error)),
+        crate::cli::OutputFormat::Human => eprintln!("{}", format_error(error, color)),
+    }
+}
+
+/// Trim a JSON value to only the named top-level fields so agents can request
+/// just what they need and not spend context on large objects. Applies to
+/// objects and to arrays of objects (each element is filtered); scalars and
+/// other values pass through unchanged. Field names absent from a given object
+/// are simply omitted, and an empty `fields` slice is a no-op.
+pub fn filter_json_fields(value: &serde_json::Value, fields: &[String]) -> serde_json::Value {
+    if fields.is_empty() {
+        return value.clone();
+    }
+    match value {
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|v| filter_json_fields(v, fields))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for field in fields {
+                if let Some(v) = map.get(field) {
+                    out.insert(field.clone(), v.clone());
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Render an error as a compact JSON object: `{ "error", "code", "remediation" }`.
+/// `remediation` is `null` when the error carries no actionable hint.
+pub fn format_error_json(error: &crate::error::SbError) -> String {
+    let payload = serde_json::json!({
+        "error": error.to_string(),
+        "code": error.code_str(),
+        "remediation": error.hint(),
+    });
+    // Compact single-line object — trivially serializable, unwrap is safe.
+    serde_json::to_string(&payload).unwrap()
 }
 
 /// Print a success message (green label, plain data).
@@ -251,6 +328,66 @@ mod tests {
         assert!(
             output.contains("->"),
             "error with hint should contain -> arrow"
+        );
+    }
+
+    #[test]
+    fn filter_json_fields_trims_object_to_named_keys() {
+        let v = serde_json::json!({"name": "a", "size": 10, "modified": "x"});
+        let out = filter_json_fields(&v, &["name".into(), "size".into()]);
+        assert_eq!(out, serde_json::json!({"name": "a", "size": 10}));
+    }
+
+    #[test]
+    fn filter_json_fields_applies_per_element_in_arrays() {
+        let v = serde_json::json!([{"name": "a", "x": 1}, {"name": "b", "x": 2}]);
+        let out = filter_json_fields(&v, &["name".into()]);
+        assert_eq!(out, serde_json::json!([{"name": "a"}, {"name": "b"}]));
+    }
+
+    #[test]
+    fn filter_json_fields_empty_is_noop_and_ignores_unknown() {
+        let v = serde_json::json!({"name": "a"});
+        assert_eq!(filter_json_fields(&v, &[]), v);
+        // Unknown field -> simply absent (empty object here).
+        assert_eq!(
+            filter_json_fields(&v, &["missing".into()]),
+            serde_json::json!({})
+        );
+    }
+
+    #[test]
+    fn format_error_json_has_error_code_remediation_fields() {
+        let err = crate::error::SbError::PageNotFound {
+            name: "missing".to_string(),
+        };
+        let json = format_error_json(&err);
+        let v: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert_eq!(v["code"], "not_found");
+        assert!(v["error"].as_str().unwrap().contains("missing"));
+        assert!(
+            v["remediation"].as_str().unwrap().contains("sb page list"),
+            "remediation should carry the hint"
+        );
+    }
+
+    #[test]
+    fn format_error_json_remediation_is_null_without_hint() {
+        let err = crate::error::SbError::Config {
+            message: "bad config".to_string(),
+        };
+        let v: serde_json::Value = serde_json::from_str(&format_error_json(&err)).unwrap();
+        assert_eq!(v["code"], "general");
+        assert!(v["remediation"].is_null(), "no hint -> null remediation");
+    }
+
+    #[test]
+    fn format_error_json_never_contains_ansi() {
+        console::set_colors_enabled(true);
+        let err = crate::error::SbError::Usage("bad".to_string());
+        assert!(
+            !format_error_json(&err).contains("\x1b["),
+            "JSON errors must never carry ANSI codes"
         );
     }
 

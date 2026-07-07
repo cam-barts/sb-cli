@@ -18,6 +18,7 @@ pub async fn execute(
     cli_token: Option<&str>,
     tag: &str,
     limit: usize,
+    fields: &[String],
     format: &OutputFormat,
     quiet: bool,
     color: bool,
@@ -67,7 +68,7 @@ pub async fn execute(
 
     let summary = TagSummary::from_lua_result(&safe_tag, &result);
 
-    render(&summary, format, color, quiet);
+    render(&summary, fields, format, color, quiet);
     Ok(())
 }
 
@@ -140,7 +141,13 @@ impl TagSummary {
     }
 }
 
-fn render(summary: &TagSummary, format: &OutputFormat, color: bool, quiet: bool) {
+fn render(
+    summary: &TagSummary,
+    fields: &[String],
+    format: &OutputFormat,
+    color: bool,
+    quiet: bool,
+) {
     match format {
         OutputFormat::Json => {
             let fields_json: serde_json::Map<String, serde_json::Value> = summary
@@ -159,6 +166,7 @@ fn render(summary: &TagSummary, format: &OutputFormat, color: bool, quiet: bool)
                 "sampled": summary.sampled,
                 "fields": fields_json,
             });
+            let payload = crate::output::filter_json_fields(&payload, fields);
             println!("{}", serde_json::to_string_pretty(&payload).unwrap());
         }
         OutputFormat::Human => {
@@ -345,7 +353,7 @@ mod tests {
             let tmp = make_space(Some("http://127.0.0.1:1"));
             enable_runtime(tmp.path());
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute(None, "bad tag", 10, &OutputFormat::Json, true, false)
+            let err = execute(None, "bad tag", 10, &[], &OutputFormat::Json, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::Usage(_)));
@@ -355,7 +363,7 @@ mod tests {
         async fn execute_errors_when_runtime_disabled() {
             let tmp = make_space(Some("http://127.0.0.1:1"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute(None, "task", 10, &OutputFormat::Json, true, false)
+            let err = execute(None, "task", 10, &[], &OutputFormat::Json, true, false)
                 .await
                 .unwrap_err();
             assert!(format!("{err}").contains("Runtime API not available"));
@@ -374,7 +382,7 @@ mod tests {
             let tmp = make_space(Some(&server.uri()));
             enable_runtime(tmp.path());
             let _g = SbSpaceGuard::set(tmp.path());
-            execute(None, "task", 100, &OutputFormat::Json, true, false)
+            execute(None, "task", 100, &[], &OutputFormat::Json, true, false)
                 .await
                 .expect("succeed");
         }
@@ -394,9 +402,17 @@ mod tests {
             enable_runtime(tmp.path());
             let _g = SbSpaceGuard::set(tmp.path());
             // Should succeed (early-return path), not error.
-            execute(None, "missing", 100, &OutputFormat::Human, false, false)
-                .await
-                .unwrap();
+            execute(
+                None,
+                "missing",
+                100,
+                &[],
+                &OutputFormat::Human,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
         }
     }
 }

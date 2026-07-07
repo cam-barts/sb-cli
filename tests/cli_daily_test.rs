@@ -172,17 +172,24 @@ fn daily_append_creates_note_and_appends_when_missing() {
 }
 
 /// `sb daily` (no flags) with `$EDITOR` unset returns exit code 1 with a
-/// helpful error message.
+/// Non-interactively (no TTY), `sb daily` with no entry ensures today's note
+/// exists and stops there instead of blocking on an editor it cannot drive —
+/// so a missing $EDITOR is no longer an error in this path.
 #[test]
-fn daily_no_editor_set_exits_with_error() {
+fn daily_no_entry_non_interactive_creates_note_without_editor() {
     let space = default_space();
 
     sb_in(&space)
         .env_remove("EDITOR")
         .arg("daily")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains("editor").or(predicate::str::contains("EDITOR")));
+        .success();
+
+    let today = jiff::Zoned::now().date();
+    let note = space
+        .path()
+        .join(format!("Journal/{}.md", today.strftime("%Y-%m-%d")));
+    assert!(note.exists(), "today's note should have been created");
 }
 
 /// Custom path template `Notes/Daily/{{date}}` with format `%Y/%m/%d` creates

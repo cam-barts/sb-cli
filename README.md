@@ -23,19 +23,35 @@ Work with your SilverBullet notes from the terminal. Pages live on your local fi
 
 ## Installation
 
+### Slim vs. AI builds
+
+`sb` ships in two flavors that are otherwise identical — the AI build is a strict
+superset (the `sb` command works the same either way):
+
+- **slim** (default): the full notes/sync/journal CLI, zero AI surface, no heavy
+  dependencies. This is what you want unless you drive `sb` with an AI agent.
+- **ai**: adds `sb mcp serve` (a [Model Context Protocol](https://modelcontextprotocol.io)
+  server) and `sb skills init` (generates agent instruction files). Opt-in via
+  the `ai` Cargo feature. `sb version` reports which flavor you have (`features:`).
+
+Because Cargo features are resolved at **compile time**, the flavor is chosen
+when you install/build — a downloaded slim binary can't be toggled to AI in
+place; you install the other artifact (or rebuild with `--features ai`).
+
 ### From GitHub Releases
 
 Download the latest release for your platform from the [releases page](https://github.com/cam-barts/sb-cli/releases/latest).
+Pick the `sb-*` archive for the slim flavor or the `sb-ai-*` archive for the AI flavor.
 
-| Platform | Archive |
-|----------|---------|
-| Linux (x86_64) | `sb-v*-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (aarch64) | `sb-v*-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS (Intel) | `sb-v*-x86_64-apple-darwin.tar.gz` |
-| macOS (Apple Silicon) | `sb-v*-aarch64-apple-darwin.tar.gz` |
-| Windows (x86_64) | `sb-v*-x86_64-pc-windows-msvc.zip` |
+| Platform | Slim archive | AI archive |
+|----------|--------------|------------|
+| Linux (x86_64) | `sb-v*-x86_64-unknown-linux-gnu.tar.gz` | `sb-ai-v*-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (aarch64) | `sb-v*-aarch64-unknown-linux-gnu.tar.gz` | `sb-ai-v*-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS (Intel) | `sb-v*-x86_64-apple-darwin.tar.gz` | `sb-ai-v*-x86_64-apple-darwin.tar.gz` |
+| macOS (Apple Silicon) | `sb-v*-aarch64-apple-darwin.tar.gz` | `sb-ai-v*-aarch64-apple-darwin.tar.gz` |
+| Windows (x86_64) | `sb-v*-x86_64-pc-windows-msvc.zip` | `sb-ai-v*-x86_64-pc-windows-msvc.zip` |
 
-Example (Linux x86_64):
+Example (Linux x86_64, slim):
 
 ```sh
 curl -LO https://github.com/cam-barts/sb-cli/releases/latest/download/sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
@@ -43,18 +59,28 @@ tar xzf sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
 sudo mv sb /usr/local/bin/
 ```
 
+Once installed, `sb upgrade` self-updates to the latest release of the **same
+flavor** (an AI build only pulls `sb-ai-*` assets, a slim build only `sb-*`);
+`sb upgrade --check` reports whether a newer release is available without
+installing it.
+
 ### From source
 
 ```sh
+# Slim (default):
 cargo install --git https://github.com/cam-barts/sb-cli
+# AI build (adds `sb mcp serve` + `sb skills init`):
+cargo install --git https://github.com/cam-barts/sb-cli --features ai
 ```
 
-Or build locally:
+`cargo binstall sb-cli` fetches the prebuilt slim release tarball instead of
+compiling. Or build locally:
 
 ```sh
 git clone https://github.com/cam-barts/sb-cli
 cd sb-cli
-cargo build --release
+cargo build --release                 # slim
+cargo build --release --features ai   # ai
 # Binary at target/release/sb
 ```
 
@@ -190,6 +216,29 @@ sb completions zsh
 sb completions zsh --install
 ```
 
+### MCP server (AI build)
+
+The `ai` build exposes `sb` as a [Model Context Protocol](https://modelcontextprotocol.io)
+server over the same core as the CLI, so MCP-native clients (Claude Desktop,
+Cursor, VS Code, …) can call it with typed tools instead of shell strings. Two
+transports:
+
+```sh
+# stdio (default): local subprocess, zero network. Configure your MCP client to
+# launch this command; JSON-RPC flows over stdin/stdout, diagnostics over stderr.
+sb mcp serve
+
+# Streamable HTTP: for networked or multi-client use. Serves at <addr>/mcp.
+sb mcp serve --http                       # binds 127.0.0.1:8787
+sb mcp serve --http --addr 127.0.0.1:9000 # custom bind
+```
+
+It exposes a small, outcome-oriented tool set — `page_list`, `page_read`,
+`query`, `server_ping` (read-only), plus `daily_append` and `page_create`
+(additive) — each annotated so clients can auto-approve reads and gate writes.
+The HTTP transport restricts the `Host` header to localhost by default. This
+subcommand exists only in the `ai` build (`sb version` shows `features: …ai…`).
+
 ## Commands
 
 Commands that take a page or template name (`page read`/`edit`/`delete`,
@@ -237,6 +286,43 @@ when it's installed, otherwise a numbered prompt.
 | `--no-color` | Disable colored output |
 | `--format <human\|json>` | Output format. Defaults to `human` when stdout is a TTY and `json` when piped, so `sb page list \| jq ...` works without an explicit flag. |
 | `--token <TOKEN>` | Auth token override (highest precedence) |
+| `--no-input` | Never prompt: disables interactive pickers, confirmations, and `$EDITOR` launches (also implied when not attached to a TTY). |
+| `--yes`, `-y` | Assume "yes" to confirmation prompts on destructive operations (required, or `--force`, to mutate non-interactively). |
+
+Agent-oriented per-command flags include `--fields name,modified` (trim JSON
+output on `page list`/`query`/`describe`), `--dry-run` (preview `page delete`/
+`page move`/`template new` without changes), and `--upsert` (`page create`
+overwrites instead of failing when the page exists).
+
+### Exit codes
+
+`sb` publishes a stable exit-code taxonomy so scripts and agents can branch on
+failures without parsing stderr. These codes are a contract and are never
+reshuffled:
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | general error |
+| `2` | usage / invalid arguments |
+| `3` | authentication error |
+| `4` | not found |
+| `5` | conflict / already exists |
+| `6` | confirmation required (re-run with `--yes`) |
+| *(other)* | `sb shell` passes through the remote process's own exit code |
+
+Under `--format json`, failures also emit a structured object to **stderr**
+(stdout stays empty), giving a parseable failure body alongside the exit code:
+
+```console
+$ sb page read missing --format json
+# stderr:
+{"error":"page not found: missing","code":"not_found","remediation":"Run `sb page list` to see available pages"}
+```
+
+The `code` string mirrors the exit-code category (`auth`, `not_found`,
+`conflict`, `confirmation_required`, `usage`, `general`, `process_failed`), and
+`remediation` is `null` when no actionable hint applies.
 
 ## Configuration
 

@@ -99,7 +99,12 @@ async fn query_returns_table_format() {
     Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["--format", "human", "query", "from tags.page limit 2"])
+        .args([
+            "--format",
+            "human",
+            "query",
+            "from index.tag \"page\" limit 2",
+        ])
         .current_dir(dir.path())
         .assert()
         .success()
@@ -126,7 +131,12 @@ async fn query_returns_json_format() {
     let output = Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["--format", "json", "query", "from tags.page limit 2"])
+        .args([
+            "--format",
+            "json",
+            "query",
+            "from index.tag \"page\" limit 2",
+        ])
         .current_dir(dir.path())
         .assert()
         .success()
@@ -147,7 +157,7 @@ async fn query_unavailable_prints_docs_link() {
     Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["query", "from tags.page"])
+        .args(["query", "from index.tag \"page\""])
         .current_dir(dir.path())
         .assert()
         .failure()
@@ -163,7 +173,7 @@ async fn query_sends_correct_lua_script() {
     Mock::given(method("POST"))
         .and(path("/.runtime/lua_script"))
         .and(body_string_contains(
-            "return query[[from tags.page limit 2]]",
+            "return query[[from index.tag \"page\" limit 2]]",
         ))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": []}"#))
         .mount(&server)
@@ -174,7 +184,7 @@ async fn query_sends_correct_lua_script() {
     Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["query", "from tags.page limit 2"])
+        .args(["query", "from index.tag \"page\" limit 2"])
         .current_dir(dir.path())
         .assert()
         .success();

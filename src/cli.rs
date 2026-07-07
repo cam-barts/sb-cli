@@ -1,11 +1,28 @@
 use clap::{Parser, Subcommand};
 
+/// Stable exit-code contract, shown under `sb --help`. Agents branch on these
+/// codes (and the matching `code` field of `--format json` errors) without
+/// parsing stderr. Never reshuffled.
+const EXIT_CODE_HELP: &str = "\
+Exit codes:
+  0  success
+  1  general error
+  2  usage / invalid arguments
+  3  authentication error
+  4  not found
+  5  conflict / already exists
+  6  confirmation required (re-run with --yes)
+  *  `sb shell` passes through the remote process's own exit code
+
+With `--format json`, failures also print `{\"error\",\"code\",\"remediation\"}` to stderr.";
+
 #[derive(Parser)]
 #[command(
     name = "sb",
     about = "CLI tool for interacting with SilverBullet",
     version,
-    propagate_version = true
+    propagate_version = true,
+    after_help = EXIT_CODE_HELP
 )]
 pub struct Cli {
     #[command(subcommand)]
@@ -31,6 +48,17 @@ pub struct Cli {
     /// Auth token override (highest precedence)
     #[arg(long, global = true)]
     pub token: Option<String>,
+
+    /// Never prompt: disable interactive pickers, confirmations, and $EDITOR
+    /// launches (also implied when stdin/stdout is not a TTY). Agents should set
+    /// this to guarantee sb never blocks on input it cannot provide.
+    #[arg(long, global = true)]
+    pub no_input: bool,
+
+    /// Assume "yes" to confirmation prompts on destructive operations. Required
+    /// (or `--force`) for agents to run mutations non-interactively.
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -157,8 +185,11 @@ pub enum Commands {
     },
     /// Execute an index query via the Runtime API
     Query {
-        /// Query expression (e.g., "from tags.page limit 10")
+        /// Query expression (e.g., `from index.tag "page" limit 10`)
         query: String,
+        /// Restrict JSON output to these comma-separated top-level fields
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
     },
     /// Execute a command on the server via the shell endpoint
     Shell {
@@ -187,13 +218,17 @@ pub enum Commands {
     },
     /// Describe the observed schema of objects tagged with the given name
     Describe {
-        /// Tag name to introspect (e.g. task, page, template)
+        /// Tag name to introspect (e.g. task, page, link)
         tag: String,
         /// Number of objects to sample when inferring the schema
         #[arg(long, default_value_t = 100)]
         limit: usize,
+        /// Restrict JSON output to these comma-separated top-level fields
+        /// (`tag`, `sampled`, `fields`)
+        #[arg(long = "fields", value_delimiter = ',', value_name = "FIELD,...")]
+        out_fields: Vec<String>,
     },
-    /// Work with page templates (pages tagged `template`)
+    /// Work with page templates (pages tagged `meta/template/page`)
     Template {
         #[command(subcommand)]
         command: TemplateCommands,
@@ -205,6 +240,72 @@ pub enum Commands {
         /// Install to the standard location for the shell instead of printing to stdout
         #[arg(long)]
         install: bool,
+    },
+    /// Update sb to the latest GitHub release (matching this build's flavor)
+    Upgrade {
+        /// Report whether a newer release is available without installing it
+        #[arg(long)]
+        check: bool,
+    },
+    /// Emit the full command surface as machine-readable JSON (source of truth for agents)
+    #[cfg(feature = "skills")]
+    Schema,
+    /// Generate agent instruction files (AGENTS.md, SKILL.md, ...) describing how to drive sb
+    #[cfg(feature = "skills")]
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
+    /// Run sb as a Model Context Protocol (MCP) server
+    #[cfg(feature = "mcp")]
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+}
+
+/// Subcommands for `sb skills`.
+#[cfg(feature = "skills")]
+#[derive(Subcommand)]
+pub enum SkillsCommands {
+    /// Write agent instruction/skill files into the current directory
+    Init {
+        /// Which ecosystem file(s) to generate.
+        #[arg(long, value_enum, default_value_t = SkillsTarget::Agents)]
+        target: SkillsTarget,
+    },
+}
+
+/// Target ecosystem for `sb skills init`.
+#[cfg(feature = "skills")]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum SkillsTarget {
+    /// AGENTS.md — the cross-tool baseline (default)
+    Agents,
+    /// CLAUDE.md + .claude/skills/<name>/SKILL.md
+    Claude,
+    /// .cursor/rules/*.mdc
+    Cursor,
+    /// .github/copilot-instructions.md
+    Copilot,
+    /// .windsurf/rules/*.md (Devin)
+    Windsurf,
+    /// Every supported target
+    All,
+}
+
+/// Subcommands for `sb mcp`.
+#[cfg(feature = "mcp")]
+#[derive(Subcommand)]
+pub enum McpCommands {
+    /// Serve as an MCP server over stdio (default) or Streamable HTTP (--http)
+    Serve {
+        /// Serve over Streamable HTTP instead of stdio (endpoint: /mcp)
+        #[arg(long)]
+        http: bool,
+        /// Address to bind for --http (default: 127.0.0.1:8787)
+        #[arg(long, value_name = "HOST:PORT", requires = "http")]
+        addr: Option<String>,
     },
 }
 
@@ -270,7 +371,7 @@ pub enum SyncCommands {
 
 #[derive(Subcommand)]
 pub enum TemplateCommands {
-    /// List pages tagged as templates
+    /// List pages tagged `meta/template/page`
     List,
     /// Create a new page from a template (interactive picker when --template is omitted)
     New {
@@ -285,6 +386,9 @@ pub enum TemplateCommands {
         /// when running in a terminal)
         #[arg(long)]
         no_edit: bool,
+        /// Preview the page that would be created without writing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -333,6 +437,9 @@ pub enum PageCommands {
         /// Limit number of results
         #[arg(long)]
         limit: Option<usize>,
+        /// Restrict JSON output to these comma-separated top-level fields
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
     },
     /// Read a page's content
     Read {
@@ -355,6 +462,10 @@ pub enum PageCommands {
         /// Use template page as initial content
         #[arg(long)]
         template: Option<String>,
+        /// Overwrite the page if it already exists (idempotent create) instead
+        /// of failing with a conflict
+        #[arg(long)]
+        upsert: bool,
     },
     /// Edit a page in $EDITOR
     Edit {
@@ -368,6 +479,9 @@ pub enum PageCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         force: bool,
+        /// Preview the deletion without removing anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Append content to a page
     Append {
@@ -383,6 +497,9 @@ pub enum PageCommands {
         name: String,
         /// New page name (without .md extension)
         new_name: String,
+        /// Preview the move without changing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 

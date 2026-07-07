@@ -82,6 +82,6 @@ async fn auth_set_uninitialized_fails() {
         .env_remove("SB_SPACE")
         .assert()
         .failure()
-        .code(1)
+        .code(4) // NotInitialized -> not-found category (exit-code taxonomy)
         .stderr(predicate::str::contains("not initialized"));
 }
