@@ -312,31 +312,58 @@ pub async fn execute_list(
     Ok(())
 }
 
+/// Collect all page names in the content dir, sorted. Backs the interactive
+/// picker used when a page-name argument is omitted.
+fn list_page_names(content_dir: &Path) -> SbResult<Vec<String>> {
+    let mut names: Vec<String> = collect_pages(content_dir)?
+        .into_iter()
+        .map(|e| e.name)
+        .collect();
+    names.sort();
+    Ok(names)
+}
+
+/// Interactively pick a page from the space (fzf, or numbered prompt). Prints a
+/// cancellation notice and returns `None` when the user backs out.
+async fn pick_page(content_dir: &Path, quiet: bool) -> SbResult<Option<String>> {
+    let names = list_page_names(content_dir)?;
+    let picked = crate::commands::picker::pick(&names, "page").await?;
+    if picked.is_none() && !quiet {
+        eprintln!("Cancelled.");
+    }
+    Ok(picked)
+}
+
 /// Read a page's content and print it to stdout.
 ///
 /// - Local mode: reads the file from the local space directory.
 /// - Remote mode (`--remote`): fetches the page from the SilverBullet server via SbClient.
 pub async fn execute_read(
     cli_token: Option<&str>,
-    name: &str,
+    name: Option<&str>,
     remote: bool,
     _format: &OutputFormat,
-    _quiet: bool,
+    quiet: bool,
     _color: bool,
 ) -> SbResult<()> {
     let content_dir = find_content_dir()?;
-    validate_page_path(&content_dir, name)?;
+    let name = match name {
+        Some(n) => n.to_string(),
+        None => match pick_page(&content_dir, quiet).await? {
+            Some(n) => n,
+            None => return Ok(()),
+        },
+    };
+    validate_page_path(&content_dir, &name)?;
 
     if remote {
         let client = build_client(cli_token)?;
-        let content = client.get_page(name).await?;
+        let content = client.get_page(&name).await?;
         print!("{}", content);
     } else {
-        let page_path = resolve_page_path(&content_dir, name);
+        let page_path = resolve_page_path(&content_dir, &name);
         if !page_path.exists() {
-            return Err(SbError::PageNotFound {
-                name: name.to_string(),
-            });
+            return Err(SbError::PageNotFound { name: name.clone() });
         }
         let content = std::fs::read_to_string(&page_path).map_err(|e| SbError::Filesystem {
             message: "failed to read page".to_string(),
@@ -353,8 +380,8 @@ pub async fn execute_read(
 ///
 /// Content priority:
 ///   1. `--content` flag
-///   2. stdin pipe (when stdin is not a TTY)
-///   3. `--template` (local file first, then remote)
+///   2. `--template` (local file first, then remote; instantiated + rendered)
+///   3. stdin pipe (when stdin is not a TTY)
 ///   4. Open editor (empty file)
 #[allow(clippy::too_many_arguments)]
 pub async fn execute_create(
@@ -396,8 +423,24 @@ pub async fn execute_create(
         // 1. --content flag
         body = c.to_string();
         open_editor = edit;
+    } else if let Some(tmpl_name) = template {
+        // 2. --template (explicit) wins over an incidental non-TTY stdin.
+        // Piped stdin, if any, is spliced at the template's `|^|` cursor marker.
+        // Resolves local file first, then remote; injects the template's
+        // frontmatter and renders via the Runtime API when available.
+        let cursor_fill = crate::commands::template::read_piped_stdin()?;
+        let config = crate::config::ResolvedConfig::load_from(&find_space_root()?)?;
+        body = crate::commands::template::fetch_and_render(
+            cli_token,
+            &config,
+            &content_dir,
+            tmpl_name,
+            cursor_fill.as_deref(),
+        )
+        .await?;
+        open_editor = edit;
     } else if !std::io::stdin().is_terminal() {
-        // 2. stdin pipe
+        // 3. stdin pipe
         let mut buf = String::new();
         std::io::stdin()
             .read_to_string(&mut buf)
@@ -407,20 +450,6 @@ pub async fn execute_create(
                 source: Some(e),
             })?;
         body = buf;
-        open_editor = edit;
-    } else if let Some(tmpl_name) = template {
-        // 3. --template: try local first, then remote
-        let local_tmpl = resolve_page_path(&content_dir, tmpl_name);
-        if local_tmpl.exists() {
-            body = std::fs::read_to_string(&local_tmpl).map_err(|e| SbError::Filesystem {
-                message: "failed to read template".to_string(),
-                path: local_tmpl.display().to_string(),
-                source: Some(e),
-            })?;
-        } else {
-            let client = build_client(cli_token)?;
-            body = client.get_page(tmpl_name).await?;
-        }
         open_editor = edit;
     } else {
         // 4. No content source — write empty file and open editor
@@ -444,14 +473,19 @@ pub async fn execute_create(
     Ok(())
 }
 
-/// Edit an existing page in `$EDITOR`.
-pub async fn execute_edit(name: &str, _quiet: bool, _color: bool) -> SbResult<()> {
+/// Edit an existing page in `$EDITOR`. With no name, pick one interactively.
+pub async fn execute_edit(name: Option<&str>, quiet: bool, _color: bool) -> SbResult<()> {
     let content_dir = find_content_dir()?;
-    let page_path = validate_page_path(&content_dir, name)?;
+    let name = match name {
+        Some(n) => n.to_string(),
+        None => match pick_page(&content_dir, quiet).await? {
+            Some(n) => n,
+            None => return Ok(()),
+        },
+    };
+    let page_path = validate_page_path(&content_dir, &name)?;
     if !page_path.exists() {
-        return Err(SbError::PageNotFound {
-            name: name.to_string(),
-        });
+        return Err(SbError::PageNotFound { name });
     }
     open_in_editor(&page_path).await?;
     Ok(())
@@ -487,16 +521,26 @@ async fn confirm_delete(name: &str) -> SbResult<bool> {
 ///
 /// Without --force: prompts on TTY, refuses on non-TTY (fail-safe).
 /// With --force: deletes immediately without prompting.
-pub async fn execute_delete(name: &str, force: bool, quiet: bool, color: bool) -> SbResult<()> {
+pub async fn execute_delete(
+    name: Option<&str>,
+    force: bool,
+    quiet: bool,
+    color: bool,
+) -> SbResult<()> {
     let content_dir = find_content_dir()?;
-    let page_path = validate_page_path(&content_dir, name)?;
+    let name = match name {
+        Some(n) => n.to_string(),
+        None => match pick_page(&content_dir, quiet).await? {
+            Some(n) => n,
+            None => return Ok(()),
+        },
+    };
+    let page_path = validate_page_path(&content_dir, &name)?;
     if !page_path.exists() {
-        return Err(SbError::PageNotFound {
-            name: name.to_string(),
-        });
+        return Err(SbError::PageNotFound { name });
     }
     if !force {
-        let confirmed = confirm_delete(name).await?;
+        let confirmed = confirm_delete(&name).await?;
         if !confirmed {
             output::print_success("Cancelled", color, quiet);
             return Ok(());
@@ -829,9 +873,16 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "Hello", "world body");
-            execute_read(None, "Hello", false, &OutputFormat::Human, true, false)
-                .await
-                .expect("read local");
+            execute_read(
+                None,
+                Some("Hello"),
+                false,
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .expect("read local");
         }
 
         #[tokio::test]
@@ -840,7 +891,7 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             let err = execute_read(
                 None,
-                "DoesNotExist",
+                Some("DoesNotExist"),
                 false,
                 &OutputFormat::Human,
                 true,
@@ -861,7 +912,7 @@ mod tests {
                 .await;
             let tmp = make_space(Some(&server.uri()));
             let _g = SbSpaceGuard::set(tmp.path());
-            execute_read(None, "Some", true, &OutputFormat::Human, true, false)
+            execute_read(None, Some("Some"), true, &OutputFormat::Human, true, false)
                 .await
                 .expect("read remote");
         }
@@ -872,7 +923,7 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             let err = execute_read(
                 None,
-                "../etc/passwd",
+                Some("../etc/passwd"),
                 false,
                 &OutputFormat::Human,
                 true,
@@ -962,7 +1013,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "ToDelete", "x");
-            execute_delete("ToDelete", true, true, false)
+            execute_delete(Some("ToDelete"), true, true, false)
                 .await
                 .expect("delete force");
             assert!(!tmp.path().join("ToDelete.md").exists());
@@ -972,7 +1023,7 @@ mod tests {
         async fn delete_errors_when_page_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_delete("Missing", true, true, false)
+            let err = execute_delete(Some("Missing"), true, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::PageNotFound { .. }));
@@ -1054,7 +1105,9 @@ mod tests {
         async fn edit_errors_when_page_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_edit("Missing", true, false).await.unwrap_err();
+            let err = execute_edit(Some("Missing"), true, false)
+                .await
+                .unwrap_err();
             assert!(matches!(err, SbError::PageNotFound { .. }));
         }
     }

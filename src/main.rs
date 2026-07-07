@@ -4,6 +4,7 @@ use tracing::debug;
 
 use sb_cli::cli::{
     AuthCommands, Cli, Commands, ConfigCommands, PageCommands, ServerCommands, SyncCommands,
+    TemplateCommands,
 };
 use sb_cli::commands;
 use sb_cli::output::{self, OutputConfig};
@@ -109,7 +110,7 @@ async fn main() {
                 PageCommands::Read { name, remote } => {
                     commands::page::execute_read(
                         cli.token.as_deref(),
-                        &name,
+                        name.as_deref(),
                         remote,
                         &format,
                         cli.quiet,
@@ -136,11 +137,17 @@ async fn main() {
                     .await
                 }
                 PageCommands::Edit { name } => {
-                    commands::page::execute_edit(&name, cli.quiet, output_config.color).await
+                    commands::page::execute_edit(name.as_deref(), cli.quiet, output_config.color)
+                        .await
                 }
                 PageCommands::Delete { name, force } => {
-                    commands::page::execute_delete(&name, force, cli.quiet, output_config.color)
-                        .await
+                    commands::page::execute_delete(
+                        name.as_deref(),
+                        force,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
                 }
                 PageCommands::Append { name, content } => {
                     commands::page::execute_append(&name, &content, cli.quiet, output_config.color)
@@ -344,6 +351,39 @@ async fn main() {
                 output_config.color,
             )
             .await
+        }
+        Some(Commands::Template { command }) => {
+            debug!("dispatching: template");
+            match command {
+                TemplateCommands::List => {
+                    commands::template::execute_list(
+                        cli.token.as_deref(),
+                        &format,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
+                }
+                TemplateCommands::New {
+                    name,
+                    template,
+                    no_edit,
+                } => {
+                    commands::template::execute_new(
+                        cli.token.as_deref(),
+                        name.as_deref(),
+                        template.as_deref(),
+                        no_edit,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
+                }
+            }
+        }
+        Some(Commands::Completions { shell, install }) => {
+            debug!("dispatching: completions");
+            commands::completions::execute(shell, install, cli.quiet, output_config.color)
         }
         None => {
             // No subcommand: print help

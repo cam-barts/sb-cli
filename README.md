@@ -122,18 +122,93 @@ sb daily --on 2026-05-15 --format json | jq .
 Want to drop the `daily` suffix? Add `alias jrnl='sb daily'` to your shell rc;
 all flags above work unchanged.
 
+### Templates
+
+SilverBullet marks a page template by tagging the page `meta/template/page`.
+`sb` reuses that convention: `sb template list` reports those pages (from the
+index when the Runtime API is available, otherwise by scanning local
+frontmatter), and `sb template new` instantiates one.
+
+```sh
+# List available templates
+sb template list
+
+# Create from a named template (skips the picker)
+sb template new "Projects/Work/Auth Rework" --template "Library/Personal/Templates/HLS"
+
+# Omit --template to pick interactively:
+#   uses fzf if it's installed, otherwise a numbered prompt
+sb template new "Projects/Work/Auth Rework"
+
+# Omit the name entirely to use the template's suggestedName:
+#   confirm/complete it interactively (a trailing "/" prompts for the leaf),
+#   or it's used directly when the template sets confirmName: false
+sb template new --template "Library/Std/Page Templates/Quick Note"
+```
+
+The new page's name follows the template's `suggestedName`/`confirmName`
+frontmatter, just like SilverBullet: `suggestedName` is rendered (so
+`${os.date(...)}` resolves) and offered as the name; `confirmName: true` (SB's
+default) confirms it interactively, while `confirmName: false` uses it directly.
+An explicit `name` argument always overrides the suggestion.
+
+After creating the page, `sb template new` opens it in `$EDITOR` (pass
+`--no-edit` to skip, e.g. in scripts; it's also skipped automatically when not
+attached to a terminal). `openIfExists: true` makes a name collision non-fatal —
+instead of erroring, the existing page is opened rather than overwritten.
+Templates' `description` frontmatter is shown in `sb template list`.
+
+The UI-only template fields (`command`, `key`/`mac`, `priority`) have no
+command-palette/keybinding analog in the CLI and are ignored.
+
+Instantiation follows SilverBullet's page-template model: the template's nested
+`frontmatter:` block becomes the new page's frontmatter, its own metadata
+(`tags: meta/template/page`, `command`, `suggestedName`, …) is dropped, and the
+`|^|` cursor marker is handled as an insertion point. When the Runtime API is
+available the result is rendered so `${...}` Space Lua expressions (e.g.
+`${os.date('%Y-%m-%d')}`) resolve; offline, `${...}` is left literal.
+`sb page create --template <name>` uses the same instantiation path.
+
+Piping content in fills the template's `|^|` marker (splice-then-render), so you
+can drop text straight into the cursor slot:
+
+```sh
+echo "Reworks the auth subsystem." | sb template new "Projects/Work/Auth" --template "Library/Personal/Templates/HLS"
+```
+
+The piped text lands where `|^|` sits (appended after the body if the template
+has no marker), and the whole page is rendered together.
+
+### Shell completions
+
+```sh
+# Print a script (bash, zsh, fish, elvish, powershell)
+sb completions zsh
+
+# Install to the standard location for your shell (auto-detected from $SHELL
+# when omitted). Prints any fpath/rc step the shell needs.
+sb completions zsh --install
+```
+
 ## Commands
+
+Commands that take a page or template name (`page read`/`edit`/`delete`,
+`template new`) let you omit it and pick interactively instead — via [`fzf`](https://github.com/junegunn/fzf)
+when it's installed, otherwise a numbered prompt.
 
 | Command | Description |
 |---------|-------------|
 | `sb init <url>` | Initialize a local space linked to a SilverBullet server |
 | `sb page list` | List all pages (supports `--sort`, `--limit`) |
-| `sb page read <name>` | Display page content (`--remote` to fetch from server) |
+| `sb page read [name]` | Display page content (`--remote` to fetch from server). Omit `name` to pick with fzf |
 | `sb page create <name>` | Create a page (`--content`, `--edit`, `--template`) |
-| `sb page edit <name>` | Edit a page in `$EDITOR` |
-| `sb page delete <name>` | Delete a page (`--force` to skip confirmation) |
+| `sb page edit [name]` | Edit a page in `$EDITOR`. Omit `name` to pick with fzf |
+| `sb page delete [name]` | Delete a page (`--force` to skip confirmation). Omit `name` to pick with fzf |
 | `sb page append <name>` | Append content to a page (`--content`) |
 | `sb page move <from> <to>` | Rename or move a page |
+| `sb template list` | List pages tagged `meta/template/page` (index-backed when the Runtime API is on, else a local frontmatter scan) |
+| `sb template new [name]` | Create a page from a template and open it in `$EDITOR` (use `--no-edit` to skip). `--template <name>` skips the picker; omitting it opens an fzf picker when `fzf` is installed, otherwise a numbered prompt. Omitting `name` uses the template's `suggestedName`/`confirmName` |
+| `sb completions <shell>` | Print a shell completion script (bash, zsh, fish, elvish, powershell); `--install` writes it to the standard location |
 | `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`, `--task`, `--task-tag`, `--no-task-tag`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
 | `sb sync` | Bidirectional sync: pull then push (`--dry-run`) |
 | `sb sync pull` | Pull changes from server (`--dry-run`) |
