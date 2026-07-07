@@ -213,7 +213,8 @@ async fn maybe_open_editor(path: &Path, no_edit: bool) -> SbResult<()> {
 
 /// Name/existence hints parsed from a page template's frontmatter.
 struct NameHints {
-    /// `suggestedName` (may contain `${...}`; not yet rendered).
+    /// Raw `suggestedName` as written in the frontmatter (may contain `${...}`);
+    /// it is rendered via the Runtime API in `resolve_new_page_name`.
     suggested: String,
     /// `confirmName` — defaults to true (SilverBullet's default).
     confirm: bool,
@@ -230,15 +231,47 @@ fn parse_name_hints(raw: &str) -> NameHints {
     }
 }
 
+/// What to do with a template's resolved `suggestedName`.
+enum NameDecision {
+    /// Use this name directly (no confirmation needed or possible).
+    Use(String),
+    /// Interactively confirm/complete this suggestion.
+    Prompt(String),
+    /// Non-interactive but the suggestion is incomplete — require an explicit
+    /// name. Carries the (possibly empty) rendered suggestion for the message.
+    NeedExplicit(String),
+}
+
+/// Decide how to handle a rendered `suggestedName` given `confirmName` and
+/// whether we're non-interactive. `confirmName` is an interactive-only hint:
+/// with no one to confirm, a fully rendered name is used as-is. Only a genuinely
+/// incomplete suggestion — empty, a `/`-terminated folder prefix, or one that
+/// still contains `${` because it couldn't be rendered — needs a human.
+fn decide_name(rendered: String, confirm: bool, no_input: bool) -> NameDecision {
+    let incomplete = rendered.is_empty() || rendered.ends_with('/') || rendered.contains("${");
+    if incomplete {
+        return if no_input {
+            NameDecision::NeedExplicit(rendered)
+        } else {
+            NameDecision::Prompt(rendered)
+        };
+    }
+    if confirm && !no_input {
+        NameDecision::Prompt(rendered)
+    } else {
+        NameDecision::Use(rendered)
+    }
+}
+
 /// Resolve the target page name from a template's `suggestedName`/`confirmName`
 /// hints, mirroring SilverBullet's "new page from template" flow.
 ///
-/// - `suggestedName` is rendered (so `${...}` resolves) and used as the name.
-/// - The name is confirmed interactively when `confirmName` is true (SB's
-///   default), when the suggestion is empty, ends with `/` (a folder prefix that
-///   still needs a leaf), or couldn't be rendered (still contains `${`).
-/// - Non-interactive (no TTY) callers that would need to confirm get a usage
-///   error asking for an explicit name.
+/// - `suggestedName` is rendered via the Runtime API (so `${...}` resolves).
+/// - Interactively, the name is confirmed when `confirmName` is true (SB's
+///   default) or the suggestion is incomplete.
+/// - Non-interactively (`--no-input`/no TTY), a fully rendered name is used
+///   directly; only a genuinely incomplete suggestion (empty, ends with `/`, or
+///   still contains `${`) yields a usage error asking for an explicit name.
 async fn resolve_new_page_name(
     cli_token: Option<&str>,
     config: &ResolvedConfig,
@@ -253,15 +286,10 @@ async fn resolve_new_page_name(
         suggested
     };
 
-    let needs_confirm =
-        hints.confirm || rendered.is_empty() || rendered.ends_with('/') || rendered.contains("${");
-
-    if !needs_confirm {
-        return Ok(rendered);
-    }
-
-    if crate::output::no_input() {
-        return Err(SbError::Usage(format!(
+    match decide_name(rendered, hints.confirm, crate::output::no_input()) {
+        NameDecision::Use(name) => Ok(name),
+        NameDecision::Prompt(suggestion) => prompt_page_name(&suggestion).await,
+        NameDecision::NeedExplicit(rendered) => Err(SbError::Usage(format!(
             "template suggests a name that needs confirmation{}; \
              pass an explicit name: sb template new <name> --template <t>",
             if rendered.is_empty() {
@@ -269,10 +297,8 @@ async fn resolve_new_page_name(
             } else {
                 format!(" ('{rendered}')")
             }
-        )));
+        ))),
     }
-
-    prompt_page_name(&rendered).await
 }
 
 /// Interactively confirm/complete a page name. A suggestion ending in `/` is a
@@ -894,6 +920,56 @@ async fn eval_lua_result(client: &SbClient, script: &str) -> SbResult<serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- name resolution decision (pure) ---
+
+    fn decide(rendered: &str, confirm: bool, no_input: bool) -> NameDecision {
+        decide_name(rendered.to_string(), confirm, no_input)
+    }
+
+    #[test]
+    fn decide_name_complete_no_confirm_uses_directly() {
+        assert!(
+            matches!(decide("Journal/2026-07-07", false, false), NameDecision::Use(n) if n == "Journal/2026-07-07")
+        );
+    }
+
+    #[test]
+    fn decide_name_complete_confirm_interactive_prompts() {
+        assert!(matches!(
+            decide("Journal/2026-07-07", true, false),
+            NameDecision::Prompt(_)
+        ));
+    }
+
+    #[test]
+    fn decide_name_complete_confirm_noninteractive_uses_rendered() {
+        // The key fix: confirmName is interactive-only. A fully rendered name is
+        // used as-is under --no-input instead of erroring.
+        assert!(matches!(
+            decide("Journal/2026-07-07", true, true),
+            NameDecision::Use(n) if n == "Journal/2026-07-07"
+        ));
+    }
+
+    #[test]
+    fn decide_name_incomplete_noninteractive_needs_explicit() {
+        // Unrendered (`${`), folder prefix (`/`), and empty are all incomplete.
+        for name in ["Journal/${date}", "Journal/", ""] {
+            assert!(
+                matches!(decide(name, false, true), NameDecision::NeedExplicit(_)),
+                "expected NeedExplicit for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn decide_name_incomplete_interactive_prompts() {
+        assert!(matches!(
+            decide("Journal/", false, false),
+            NameDecision::Prompt(_)
+        ));
+    }
 
     // --- frontmatter parsing ---
 

@@ -52,10 +52,6 @@ pub enum SbError {
     #[error("{0}")]
     Usage(String),
 
-    /// Not yet implemented -- placeholder for future commands
-    #[error("command not yet implemented")]
-    NotImplemented,
-
     /// Space is already initialized (`.sb/` directory already exists)
     #[error("already initialized: {path}")]
     AlreadyInitialized { path: String },
@@ -255,12 +251,6 @@ mod tests {
         };
         assert_eq!(err.exit_code(), 3);
         assert_eq!(err.code_str(), "auth");
-    }
-
-    #[test]
-    fn not_implemented_has_exit_code_1() {
-        let err = SbError::NotImplemented;
-        assert_eq!(err.exit_code(), 1);
     }
 
     #[test]
