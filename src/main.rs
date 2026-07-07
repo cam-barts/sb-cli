@@ -385,6 +385,29 @@ async fn main() {
             debug!("dispatching: completions");
             commands::completions::execute(shell, install, cli.quiet, output_config.color)
         }
+        #[cfg(feature = "skills")]
+        Some(Commands::Schema) => {
+            debug!("dispatching: schema");
+            commands::schema::execute(cli.quiet, output_config.color)
+        }
+        #[cfg(feature = "skills")]
+        Some(Commands::Skills { command }) => {
+            debug!("dispatching: skills");
+            match command {
+                sb_cli::cli::SkillsCommands::Init { target } => {
+                    commands::skills::execute_init(target, cli.quiet, output_config.color)
+                }
+            }
+        }
+        #[cfg(feature = "mcp")]
+        Some(Commands::Mcp { command }) => {
+            debug!("dispatching: mcp");
+            match command {
+                sb_cli::cli::McpCommands::Serve { http } => {
+                    commands::mcp::execute_serve(http, cli.quiet, output_config.color).await
+                }
+            }
+        }
         None => {
             // No subcommand: print help
             use clap::CommandFactory;

@@ -55,7 +55,31 @@ pub fn execute_to(out: &mut dyn Write, quiet: bool, color: bool) -> SbResult<()>
         env!("SB_TARGET")
     )
     .ok();
+    writeln!(
+        out,
+        "{} {}",
+        label_style.apply_to("features:"),
+        compiled_features()
+    )
+    .ok();
     Ok(())
+}
+
+/// The set of opt-in features compiled into this binary, so a human or agent can
+/// tell a slim build from an `ai` build. Prints `none` for the default build.
+pub fn compiled_features() -> String {
+    let mut features = Vec::new();
+    if cfg!(feature = "skills") {
+        features.push("skills");
+    }
+    if cfg!(feature = "mcp") {
+        features.push("mcp");
+    }
+    if features.is_empty() {
+        "none".to_string()
+    } else {
+        features.join(",")
+    }
 }
 
 #[cfg(test)]

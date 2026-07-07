@@ -206,6 +206,63 @@ pub enum Commands {
         #[arg(long)]
         install: bool,
     },
+    /// Emit the full command surface as machine-readable JSON (source of truth for agents)
+    #[cfg(feature = "skills")]
+    Schema,
+    /// Generate agent instruction files (AGENTS.md, SKILL.md, ...) describing how to drive sb
+    #[cfg(feature = "skills")]
+    Skills {
+        #[command(subcommand)]
+        command: SkillsCommands,
+    },
+    /// Run sb as a Model Context Protocol (MCP) server
+    #[cfg(feature = "mcp")]
+    Mcp {
+        #[command(subcommand)]
+        command: McpCommands,
+    },
+}
+
+/// Subcommands for `sb skills`.
+#[cfg(feature = "skills")]
+#[derive(Subcommand)]
+pub enum SkillsCommands {
+    /// Write agent instruction/skill files into the current directory
+    Init {
+        /// Which ecosystem file(s) to generate.
+        #[arg(long, value_enum, default_value_t = SkillsTarget::Agents)]
+        target: SkillsTarget,
+    },
+}
+
+/// Target ecosystem for `sb skills init`.
+#[cfg(feature = "skills")]
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum SkillsTarget {
+    /// AGENTS.md — the cross-tool baseline (default)
+    Agents,
+    /// CLAUDE.md + .claude/skills/<name>/SKILL.md
+    Claude,
+    /// .cursor/rules/*.mdc
+    Cursor,
+    /// .github/copilot-instructions.md
+    Copilot,
+    /// .windsurf/rules/*.md (Devin)
+    Windsurf,
+    /// Every supported target
+    All,
+}
+
+/// Subcommands for `sb mcp`.
+#[cfg(feature = "mcp")]
+#[derive(Subcommand)]
+pub enum McpCommands {
+    /// Serve over stdio (default) or Streamable HTTP (--http)
+    Serve {
+        /// Serve over Streamable HTTP instead of stdio (binds a local port)
+        #[arg(long)]
+        http: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]

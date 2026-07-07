@@ -13,9 +13,21 @@ categories = ["command-line-utilities"]
 name = "sb"
 path = "src/main.rs"
 
+[features]
+# Slim by default: zero AI/agent surface, no heavy deps.
+default = []
+# Umbrella opt-in for everything agent-facing.
+ai = ["skills", "mcp"]
+# `sb schema` + `sb skills init` — writes agent instruction files. No heavy deps.
+skills = []
+# `sb mcp serve` — exposes sb as an MCP server. Pulls the rmcp SDK.
+mcp = ["dep:rmcp", "dep:schemars"]
+
 [dependencies]
 clap = { version = "4.5", features = ["derive"] }
 clap_complete = "4.5"
+rmcp = { version = "2", optional = true, features = ["server", "macros", "transport-io"] }
+schemars = { version = "1", optional = true }
 tokio = { version = "1.47", features = ["rt-multi-thread", "macros", "fs", "time"] }
 reqwest = { version = "0.12", features = ["json", "rustls-tls-native-roots"], default-features = false }
 rusqlite = { version = "0.32", features = ["bundled"] }
