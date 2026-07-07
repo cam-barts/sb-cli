@@ -1,3 +1,9 @@
+## v1.7.0 (2026-07-07)
+
+### Feat
+
+- page templates, shell completions, and interactive pickers (#7)
+
 ## v1.6.0 (2026-07-01)
 
 ### Feat
