@@ -237,6 +237,13 @@ when it's installed, otherwise a numbered prompt.
 | `--no-color` | Disable colored output |
 | `--format <human\|json>` | Output format. Defaults to `human` when stdout is a TTY and `json` when piped, so `sb page list \| jq ...` works without an explicit flag. |
 | `--token <TOKEN>` | Auth token override (highest precedence) |
+| `--no-input` | Never prompt: disables interactive pickers, confirmations, and `$EDITOR` launches (also implied when not attached to a TTY). |
+| `--yes`, `-y` | Assume "yes" to confirmation prompts on destructive operations (required, or `--force`, to mutate non-interactively). |
+
+Agent-oriented per-command flags include `--fields name,modified` (trim JSON
+output on `page list`/`query`/`describe`), `--dry-run` (preview `page delete`/
+`page move`/`template new` without changes), and `--upsert` (`page create`
+overwrites instead of failing when the page exists).
 
 ### Exit codes
 

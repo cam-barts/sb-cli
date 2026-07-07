@@ -90,11 +90,13 @@ pub async fn execute_list(
 /// `None`, present an interactive picker (fzf when available, numbered prompt
 /// otherwise). When `name` is `None`, fall back to the template's
 /// `suggestedName`/`confirmName` (SilverBullet's "new page from template" flow).
+#[allow(clippy::too_many_arguments)]
 pub async fn execute_new(
     cli_token: Option<&str>,
     name: Option<&str>,
     template: Option<&str>,
     no_edit: bool,
+    dry_run: bool,
     quiet: bool,
     color: bool,
 ) -> SbResult<()> {
@@ -156,6 +158,17 @@ pub async fn execute_new(
             return Ok(());
         }
         return Err(SbError::PageAlreadyExists { name: page_name });
+    }
+
+    // --dry-run previews the resolved target after name/existence checks,
+    // without rendering the template or writing anything.
+    if dry_run {
+        crate::output::print_success(
+            &format!("[dry-run] would create page '{page_name}' from template '{template_name}'"),
+            color,
+            quiet,
+        );
+        return Ok(());
     }
 
     let body = render_from_raw(cli_token, &config, &raw, cursor_fill.as_deref()).await?;
@@ -1181,7 +1194,7 @@ mod tests {
             std::fs::write(root.join("Existing.md"), "already here").unwrap();
             let _g = SbSpaceGuard::set(root);
 
-            execute_new(None, None, Some("Tmpl"), true, true, false)
+            execute_new(None, None, Some("Tmpl"), true, false, true, false)
                 .await
                 .expect("openIfExists should not error on existing page");
             // Existing page is left untouched (not overwritten by the template).
@@ -1203,7 +1216,7 @@ mod tests {
             std::fs::write(root.join("Existing.md"), "already here").unwrap();
             let _g = SbSpaceGuard::set(root);
 
-            let err = execute_new(None, None, Some("Tmpl"), true, true, false)
+            let err = execute_new(None, None, Some("Tmpl"), true, false, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::PageAlreadyExists { .. }));

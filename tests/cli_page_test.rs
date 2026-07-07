@@ -359,6 +359,61 @@ fn page_create_duplicate_fails_with_error() {
 }
 
 #[test]
+fn page_create_upsert_overwrites_existing_page() {
+    let dir = setup_space();
+    write_page(&dir, "existing-page", "original content");
+
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "create",
+            "existing-page",
+            "--content",
+            "replacement",
+            "--upsert",
+        ])
+        .assert()
+        .success();
+
+    let body = std::fs::read_to_string(dir.path().join("existing-page.md")).unwrap();
+    assert_eq!(body, "replacement", "--upsert should overwrite the page");
+}
+
+#[test]
+fn page_delete_dry_run_previews_without_removing() {
+    let dir = setup_space();
+    write_page(&dir, "keep-me", "# Keep");
+
+    sb_cmd(&dir)
+        .args(["page", "delete", "keep-me", "--dry-run"])
+        .write_stdin("")
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("dry-run"));
+    assert!(
+        dir.path().join("keep-me.md").exists(),
+        "dry-run must not delete the page"
+    );
+}
+
+#[test]
+fn page_move_dry_run_previews_without_moving() {
+    let dir = setup_space();
+    write_page(&dir, "src", "# Src");
+
+    sb_cmd(&dir)
+        .args(["page", "move", "src", "dst", "--dry-run"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains("dry-run"));
+    assert!(dir.path().join("src.md").exists(), "source must remain");
+    assert!(
+        !dir.path().join("dst.md").exists(),
+        "destination must not be created on dry-run"
+    );
+}
+
+#[test]
 fn page_create_nested_creates_intermediate_directories() {
     let dir = setup_space();
 

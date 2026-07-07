@@ -133,6 +133,7 @@ async fn main() {
                     content,
                     edit,
                     template,
+                    upsert,
                 } => {
                     commands::page::execute_create(
                         cli.token.as_deref(),
@@ -140,6 +141,7 @@ async fn main() {
                         content.as_deref(),
                         edit,
                         template.as_deref(),
+                        upsert,
                         &format,
                         cli.quiet,
                         output_config.color,
@@ -150,10 +152,15 @@ async fn main() {
                     commands::page::execute_edit(name.as_deref(), cli.quiet, output_config.color)
                         .await
                 }
-                PageCommands::Delete { name, force } => {
+                PageCommands::Delete {
+                    name,
+                    force,
+                    dry_run,
+                } => {
                     commands::page::execute_delete(
                         name.as_deref(),
                         force,
+                        dry_run,
                         cli.quiet,
                         output_config.color,
                     )
@@ -163,9 +170,19 @@ async fn main() {
                     commands::page::execute_append(&name, &content, cli.quiet, output_config.color)
                         .await
                 }
-                PageCommands::Move { name, new_name } => {
-                    commands::page::execute_move(&name, &new_name, cli.quiet, output_config.color)
-                        .await
+                PageCommands::Move {
+                    name,
+                    new_name,
+                    dry_run,
+                } => {
+                    commands::page::execute_move(
+                        &name,
+                        &new_name,
+                        dry_run,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
                 }
             }
         }
@@ -384,12 +401,14 @@ async fn main() {
                     name,
                     template,
                     no_edit,
+                    dry_run,
                 } => {
                     commands::template::execute_new(
                         cli.token.as_deref(),
                         name.as_deref(),
                         template.as_deref(),
                         no_edit,
+                        dry_run,
                         cli.quiet,
                         output_config.color,
                     )

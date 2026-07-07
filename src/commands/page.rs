@@ -395,6 +395,7 @@ pub async fn execute_create(
     content: Option<&str>,
     edit: bool,
     template: Option<&str>,
+    upsert: bool,
     _format: &OutputFormat,
     quiet: bool,
     color: bool,
@@ -404,8 +405,9 @@ pub async fn execute_create(
     let content_dir = find_content_dir()?;
     let page_path = validate_page_path(&content_dir, name)?;
 
-    // Duplicate check
-    if page_path.exists() {
+    // Duplicate check — with --upsert an existing page is overwritten instead
+    // of being a conflict, giving agents a safe, idempotent create.
+    if page_path.exists() && !upsert {
         return Err(SbError::PageAlreadyExists {
             name: name.to_string(),
         });
@@ -531,6 +533,7 @@ async fn confirm_delete(name: &str) -> SbResult<bool> {
 pub async fn execute_delete(
     name: Option<&str>,
     force: bool,
+    dry_run: bool,
     quiet: bool,
     color: bool,
 ) -> SbResult<()> {
@@ -545,6 +548,12 @@ pub async fn execute_delete(
     let page_path = validate_page_path(&content_dir, &name)?;
     if !page_path.exists() {
         return Err(SbError::PageNotFound { name });
+    }
+    // --dry-run previews without touching the filesystem or prompting, so an
+    // agent can rehearse a destructive op safely.
+    if dry_run {
+        output::print_success(&format!("[dry-run] would delete {name}"), color, quiet);
+        return Ok(());
     }
     if !(force || output::assume_yes()) {
         // Non-interactive without an explicit opt-in: return a confirmation
@@ -612,7 +621,13 @@ pub async fn execute_append(name: &str, content: &str, quiet: bool, color: bool)
 }
 
 /// Move/rename a page, creating intermediate directories for the target.
-pub async fn execute_move(name: &str, new_name: &str, quiet: bool, color: bool) -> SbResult<()> {
+pub async fn execute_move(
+    name: &str,
+    new_name: &str,
+    dry_run: bool,
+    quiet: bool,
+    color: bool,
+) -> SbResult<()> {
     let space_root = find_space_root()?;
     let content_dir = find_content_dir()?;
     let src_path = validate_page_path(&content_dir, name)?;
@@ -626,6 +641,15 @@ pub async fn execute_move(name: &str, new_name: &str, quiet: bool, color: bool) 
         return Err(SbError::PageAlreadyExists {
             name: new_name.to_string(),
         });
+    }
+    // --dry-run previews the rename after validation without moving anything.
+    if dry_run {
+        output::print_success(
+            &format!("[dry-run] would move {name} -> {new_name}"),
+            color,
+            quiet,
+        );
+        return Ok(());
     }
     // Create intermediate directories for destination
     if let Some(parent) = dst_path.parent() {
@@ -990,6 +1014,7 @@ mod tests {
                 Some("# Hello"),
                 false,
                 None,
+                false,
                 &OutputFormat::Human,
                 true,
                 false,
@@ -1011,6 +1036,7 @@ mod tests {
                 Some("ignored"),
                 false,
                 None,
+                false,
                 &OutputFormat::Human,
                 true,
                 false,
@@ -1030,6 +1056,7 @@ mod tests {
                 Some("body"),
                 false,
                 None,
+                false,
                 &OutputFormat::Human,
                 true,
                 false,
@@ -1057,7 +1084,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "ToDelete", "x");
-            execute_delete(Some("ToDelete"), true, true, false)
+            execute_delete(Some("ToDelete"), true, false, true, false)
                 .await
                 .expect("delete force");
             assert!(!tmp.path().join("ToDelete.md").exists());
@@ -1067,7 +1094,7 @@ mod tests {
         async fn delete_errors_when_page_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_delete(Some("Missing"), true, true, false)
+            let err = execute_delete(Some("Missing"), true, false, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::PageNotFound { .. }));
@@ -1105,7 +1132,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "OldName", "body");
-            execute_move("OldName", "NewName", true, false)
+            execute_move("OldName", "NewName", false, true, false)
                 .await
                 .expect("move");
             assert!(!tmp.path().join("OldName.md").exists());
@@ -1116,7 +1143,7 @@ mod tests {
         async fn move_errors_when_source_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_move("Ghost", "Other", true, false)
+            let err = execute_move("Ghost", "Other", false, true, false)
                 .await
                 .unwrap_err();
             assert!(matches!(err, SbError::PageNotFound { .. }));
@@ -1128,7 +1155,9 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "A", "x");
             seed_page(tmp.path(), "B", "y");
-            let err = execute_move("A", "B", true, false).await.unwrap_err();
+            let err = execute_move("A", "B", false, true, false)
+                .await
+                .unwrap_err();
             assert!(matches!(err, SbError::PageAlreadyExists { .. }));
         }
 
@@ -1137,7 +1166,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "Flat", "x");
-            execute_move("Flat", "Subdir/Nested", true, false)
+            execute_move("Flat", "Subdir/Nested", false, true, false)
                 .await
                 .expect("move nested");
             assert!(tmp.path().join("Subdir").join("Nested.md").is_file());

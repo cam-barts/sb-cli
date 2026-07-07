@@ -377,6 +377,9 @@ pub enum TemplateCommands {
         /// when running in a terminal)
         #[arg(long)]
         no_edit: bool,
+        /// Preview the page that would be created without writing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -450,6 +453,10 @@ pub enum PageCommands {
         /// Use template page as initial content
         #[arg(long)]
         template: Option<String>,
+        /// Overwrite the page if it already exists (idempotent create) instead
+        /// of failing with a conflict
+        #[arg(long)]
+        upsert: bool,
     },
     /// Edit a page in $EDITOR
     Edit {
@@ -463,6 +470,9 @@ pub enum PageCommands {
         /// Skip confirmation prompt
         #[arg(long)]
         force: bool,
+        /// Preview the deletion without removing anything
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Append content to a page
     Append {
@@ -478,6 +488,9 @@ pub enum PageCommands {
         name: String,
         /// New page name (without .md extension)
         new_name: String,
+        /// Preview the move without changing anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
