@@ -156,10 +156,13 @@ stderr; stdout stays empty on failure.\n\
 6 confirmation-required.\n\
 - Non-interactive: pass `--no-input` to disable pickers/confirmations/$EDITOR, \
 and `--yes` (or `--force`) to approve destructive operations.\n\n\
-## Configuration (environment)\n\
+## Configuration\n\
+- Resolution order (highest wins): CLI flags > `SB_*` env vars > OS keychain > \
+per-space `<space>/.sb/config.toml` > user `~/.config/sb/config.toml` > defaults. \
+`sb config show` prints the resolved values and where each came from.\n\
 - `SB_SERVER_URL` — SilverBullet server URL.\n\
-- `SB_TOKEN` — auth token; preferred for headless/agent use (takes precedence \
-over the OS keychain). Every config field has an `SB_`-prefixed variable.\n\n\
+- `SB_TOKEN` — auth token; preferred for headless/agent use (beats the keychain). \
+Every config field has an `SB_`-prefixed variable.\n\n\
 ## Commands\n",
     );
 
@@ -193,8 +196,10 @@ tags: `page`, `task`, `tag`, `link`, plus any custom fenced data-object tag.\n\
 — use it to learn a tag's shape before querying.\n\
 - `sb lua` evaluates a Space Lua expression via the Runtime API, e.g. \
 `sb lua 'return 1 + 1'`.\n\
-- `query`/`lua`/`describe` need the server's Runtime API; on a transient 5xx just \
-after a space reload, wait a moment and retry.\n\
+- `query`/`lua`/`describe` (and template rendering) require SilverBullet's Runtime \
+API, which is OFF by default. Enable it with `[runtime] available = true` in \
+`.sb/config.toml` (or `SB_RUNTIME_AVAILABLE=1`); the server must be running with a \
+headless browser. On a transient 5xx just after a space reload, wait and retry.\n\
 \n## Recipes\n\
 - Append to today's journal: `sb daily \"text\"`\n\
 - Create or overwrite a page: `sb page create Name --content \"...\" --upsert`\n\
@@ -230,6 +235,15 @@ mod tests {
         assert!(
             body.contains("sb lua"),
             "should mention Space Lua evaluation"
+        );
+        // Config location + the Runtime-API-off-by-default gotcha.
+        assert!(
+            body.contains(".sb/config.toml"),
+            "should say where config lives"
+        );
+        assert!(
+            body.contains("Runtime") && body.contains("OFF by default"),
+            "should note the Runtime API is off by default"
         );
         // `sb shell` safety warning is required.
         assert!(body.contains("DISABLED by default"));
