@@ -225,14 +225,14 @@ fn page_read_outputs_file_content_to_stdout() {
 }
 
 #[test]
-fn page_read_nonexistent_page_returns_error_and_exit_1() {
+fn page_read_nonexistent_page_returns_error_and_exit_4() {
     let dir = setup_space();
 
     sb_cmd(&dir)
         .args(["page", "read", "nonexistent-page"])
         .assert()
         .failure()
-        .code(1)
+        .code(4) // PageNotFound -> not-found category
         .stderr(
             predicate::str::contains("not found").or(predicate::str::contains("nonexistent-page")),
         );
@@ -326,7 +326,7 @@ fn page_create_duplicate_fails_with_error() {
         ])
         .assert()
         .failure()
-        .code(1)
+        .code(5) // PageAlreadyExists -> conflict category
         .stderr(
             predicate::str::contains("already exists")
                 .or(predicate::str::contains("existing-page")),
@@ -409,7 +409,7 @@ fn page_edit_nonexistent_page_returns_not_found_error() {
         .env("EDITOR", "true")
         .assert()
         .failure()
-        .code(1)
+        .code(4) // PageNotFound -> not-found category
         .stderr(
             predicate::str::contains("not found").or(predicate::str::contains("nonexistent-page")),
         );
@@ -459,7 +459,7 @@ fn page_delete_nonexistent_with_force_returns_error() {
         .args(["page", "delete", "nonexistent", "--force"])
         .assert()
         .failure()
-        .code(1)
+        .code(4) // PageNotFound -> not-found category
         .stderr(predicate::str::contains("not found").or(predicate::str::contains("nonexistent")));
 }
 
@@ -576,7 +576,7 @@ fn page_move_source_not_found_returns_error() {
         .args(["page", "move", "missing-source", "target"])
         .assert()
         .failure()
-        .code(1)
+        .code(4) // PageNotFound -> not-found category
         .stderr(
             predicate::str::contains("not found").or(predicate::str::contains("missing-source")),
         );
@@ -592,7 +592,7 @@ fn page_move_target_already_exists_returns_error() {
         .args(["page", "move", "source-page", "target-page"])
         .assert()
         .failure()
-        .code(1)
+        .code(5) // PageAlreadyExists -> conflict category
         .stderr(
             predicate::str::contains("already exists").or(predicate::str::contains("target-page")),
         );

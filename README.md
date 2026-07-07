@@ -238,6 +238,36 @@ when it's installed, otherwise a numbered prompt.
 | `--format <human\|json>` | Output format. Defaults to `human` when stdout is a TTY and `json` when piped, so `sb page list \| jq ...` works without an explicit flag. |
 | `--token <TOKEN>` | Auth token override (highest precedence) |
 
+### Exit codes
+
+`sb` publishes a stable exit-code taxonomy so scripts and agents can branch on
+failures without parsing stderr. These codes are a contract and are never
+reshuffled:
+
+| Code | Meaning |
+|------|---------|
+| `0` | success |
+| `1` | general error |
+| `2` | usage / invalid arguments |
+| `3` | authentication error |
+| `4` | not found |
+| `5` | conflict / already exists |
+| `6` | confirmation required (re-run with `--yes`) |
+| *(other)* | `sb shell` passes through the remote process's own exit code |
+
+Under `--format json`, failures also emit a structured object to **stderr**
+(stdout stays empty), giving a parseable failure body alongside the exit code:
+
+```console
+$ sb page read missing --format json
+# stderr:
+{"error":"page not found: missing","code":"not_found","remediation":"Run `sb page list` to see available pages"}
+```
+
+The `code` string mirrors the exit-code category (`auth`, `not_found`,
+`conflict`, `confirmation_required`, `usage`, `general`, `process_failed`), and
+`remediation` is `null` when no actionable hint applies.
+
 ## Configuration
 
 Configuration lives in `.sb/config.toml` inside your initialized space directory.

@@ -90,15 +90,78 @@ pub enum SbError {
     /// Remote process exited with non-zero code (used by sb shell)
     #[error("process exited with code {code}")]
     ProcessFailed { code: i32, stderr: String },
+
+    /// A destructive/ambiguous action needs explicit confirmation, but none was
+    /// given and we are non-interactive (agents hit this instead of stalling on
+    /// a prompt they cannot answer). Carries the exact command to re-run.
+    #[error("confirmation required: {action}")]
+    ConfirmationRequired { action: String, rerun: String },
+}
+
+/// Coarse error category — the single source of truth behind both the process
+/// exit code and the machine-readable `code` string, so the two can never drift.
+/// Documented as a stable contract for agents (see `--help` / README).
+enum ErrorCategory {
+    /// Exit 1 — unclassified/internal/network/io failures.
+    General,
+    /// Exit 2 — bad arguments/flags (aligns with clap's own arg-parse exit).
+    Usage,
+    /// Exit 3 — authentication/token problems.
+    Auth,
+    /// Exit 4 — a required resource was not found.
+    NotFound,
+    /// Exit 5 — the target already exists / conflicting state.
+    Conflict,
+    /// Exit 6 — a mutation needs `--yes` but none was given.
+    ConfirmationRequired,
+    /// Passthrough of a child process's own exit code.
+    Process(i32),
 }
 
 impl SbError {
-    /// Exit code: 0 success, 1 general error, 2 usage error
-    pub fn exit_code(&self) -> i32 {
+    /// Map each variant to its coarse category (drives `exit_code` + `code_str`).
+    fn category(&self) -> ErrorCategory {
         match self {
-            SbError::Usage(_) => 2,
-            SbError::ProcessFailed { code, .. } => *code,
-            _ => 1,
+            SbError::Usage(_) => ErrorCategory::Usage,
+            SbError::AuthFailed { .. } | SbError::TokenNotFound { .. } => ErrorCategory::Auth,
+            SbError::NotInitialized
+            | SbError::SpaceNotFound { .. }
+            | SbError::PageNotFound { .. } => ErrorCategory::NotFound,
+            SbError::AlreadyInitialized { .. } | SbError::PageAlreadyExists { .. } => {
+                ErrorCategory::Conflict
+            }
+            SbError::ConfirmationRequired { .. } => ErrorCategory::ConfirmationRequired,
+            SbError::ProcessFailed { code, .. } => ErrorCategory::Process(*code),
+            _ => ErrorCategory::General,
+        }
+    }
+
+    /// Stable process exit code. Taxonomy (never reshuffled):
+    /// 0 success, 1 general, 2 usage, 3 auth, 4 not-found, 5 conflict,
+    /// 6 confirmation-required; `sb shell` passes through the child's code.
+    pub fn exit_code(&self) -> i32 {
+        match self.category() {
+            ErrorCategory::General => 1,
+            ErrorCategory::Usage => 2,
+            ErrorCategory::Auth => 3,
+            ErrorCategory::NotFound => 4,
+            ErrorCategory::Conflict => 5,
+            ErrorCategory::ConfirmationRequired => 6,
+            ErrorCategory::Process(code) => code,
+        }
+    }
+
+    /// Stable machine-readable code string mirroring `exit_code`, emitted as the
+    /// `code` field of JSON error objects so agents can branch without grepping.
+    pub fn code_str(&self) -> &'static str {
+        match self.category() {
+            ErrorCategory::General => "general",
+            ErrorCategory::Usage => "usage",
+            ErrorCategory::Auth => "auth",
+            ErrorCategory::NotFound => "not_found",
+            ErrorCategory::Conflict => "conflict",
+            ErrorCategory::ConfirmationRequired => "confirmation_required",
+            ErrorCategory::Process(_) => "process_failed",
         }
     }
 
@@ -138,6 +201,7 @@ impl SbError {
             SbError::ProcessFailed { stderr, .. } if !stderr.is_empty() => {
                 Some(format!("stderr: {stderr}"))
             }
+            SbError::ConfirmationRequired { rerun, .. } => Some(format!("re-run with: {rerun}")),
             _ => None,
         }
     }
@@ -184,12 +248,13 @@ mod tests {
     }
 
     #[test]
-    fn auth_failed_has_exit_code_1() {
+    fn auth_failed_has_exit_code_3() {
         let err = SbError::AuthFailed {
             url: "http://localhost:3000".to_string(),
             status: 401,
         };
-        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.exit_code(), 3);
+        assert_eq!(err.code_str(), "auth");
     }
 
     #[test]
@@ -300,11 +365,12 @@ mod tests {
     // --- New variant tests ---
 
     #[test]
-    fn already_initialized_has_exit_code_1() {
+    fn already_initialized_has_exit_code_5() {
         let err = SbError::AlreadyInitialized {
             path: "/home/user/notes".to_string(),
         };
-        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.exit_code(), 5);
+        assert_eq!(err.code_str(), "conflict");
     }
 
     #[test]
@@ -324,9 +390,10 @@ mod tests {
     }
 
     #[test]
-    fn not_initialized_has_exit_code_1() {
+    fn not_initialized_has_exit_code_4() {
         let err = SbError::NotInitialized;
-        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.exit_code(), 4);
+        assert_eq!(err.code_str(), "not_found");
     }
 
     #[test]
@@ -337,11 +404,12 @@ mod tests {
     }
 
     #[test]
-    fn token_not_found_has_exit_code_1() {
+    fn token_not_found_has_exit_code_3() {
         let err = SbError::TokenNotFound {
             checked: vec!["--token flag".to_string()],
         };
-        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.exit_code(), 3);
+        assert_eq!(err.code_str(), "auth");
     }
 
     #[test]
@@ -370,25 +438,55 @@ mod tests {
     // --- Phase 03 new variant tests ---
 
     #[test]
-    fn page_not_found_has_exit_code_1() {
+    fn page_not_found_has_exit_code_4() {
         let err = SbError::PageNotFound {
             name: "test".into(),
         };
-        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.exit_code(), 4);
+        assert_eq!(err.code_str(), "not_found");
     }
 
     #[test]
-    fn page_already_exists_has_exit_code_1() {
+    fn page_already_exists_has_exit_code_5() {
         let err = SbError::PageAlreadyExists {
             name: "test".into(),
         };
-        assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.exit_code(), 5);
+        assert_eq!(err.code_str(), "conflict");
     }
 
     #[test]
     fn editor_not_set_has_exit_code_1() {
         let err = SbError::EditorNotSet;
         assert_eq!(err.exit_code(), 1);
+        assert_eq!(err.code_str(), "general");
+    }
+
+    #[test]
+    fn usage_error_code_str_is_usage() {
+        let err = SbError::Usage("bad".into());
+        assert_eq!(err.exit_code(), 2);
+        assert_eq!(err.code_str(), "usage");
+    }
+
+    #[test]
+    fn confirmation_required_has_exit_code_6() {
+        let err = SbError::ConfirmationRequired {
+            action: "delete page 'foo'".into(),
+            rerun: "sb page delete foo --yes".into(),
+        };
+        assert_eq!(err.exit_code(), 6);
+        assert_eq!(err.code_str(), "confirmation_required");
+    }
+
+    #[test]
+    fn process_failed_passes_through_child_code() {
+        let err = SbError::ProcessFailed {
+            code: 42,
+            stderr: String::new(),
+        };
+        assert_eq!(err.exit_code(), 42);
+        assert_eq!(err.code_str(), "process_failed");
     }
 
     #[test]

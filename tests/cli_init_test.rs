@@ -177,7 +177,7 @@ async fn init_already_initialized_aborts() {
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .code(1)
+        .code(5) // AlreadyInitialized -> conflict category
         .stderr(predicate::str::contains("already initialized"));
 }
 

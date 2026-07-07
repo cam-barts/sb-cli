@@ -56,7 +56,7 @@ async fn server_ping_uninitialized_fails() {
         .env_remove("SB_SPACE")
         .assert()
         .failure()
-        .code(1)
+        .code(4) // NotInitialized -> not-found category
         .stderr(predicate::str::contains("not initialized"));
 }
 

@@ -1,11 +1,28 @@
 use clap::{Parser, Subcommand};
 
+/// Stable exit-code contract, shown under `sb --help`. Agents branch on these
+/// codes (and the matching `code` field of `--format json` errors) without
+/// parsing stderr. Never reshuffled.
+const EXIT_CODE_HELP: &str = "\
+Exit codes:
+  0  success
+  1  general error
+  2  usage / invalid arguments
+  3  authentication error
+  4  not found
+  5  conflict / already exists
+  6  confirmation required (re-run with --yes)
+  *  `sb shell` passes through the remote process's own exit code
+
+With `--format json`, failures also print `{\"error\",\"code\",\"remediation\"}` to stderr.";
+
 #[derive(Parser)]
 #[command(
     name = "sb",
     about = "CLI tool for interacting with SilverBullet",
     version,
-    propagate_version = true
+    propagate_version = true,
+    after_help = EXIT_CODE_HELP
 )]
 pub struct Cli {
     #[command(subcommand)]
