@@ -184,14 +184,24 @@ over the OS keychain). Every config field has an `SB_`-prefixed variable.\n\n\
     }
 
     out.push_str(
-        "\n## Recipes\n\
+        "\n## Querying & scripting\n\
+- `sb query` runs SilverBullet index queries (SLIQ) over indexed objects. Common \
+tags: `page`, `task`, `tag`, `link`, plus any custom fenced data-object tag.\n\
+  - `sb query 'from index.tag \"page\" order by name limit 20'`\n\
+  - `sb query 'from index.tag \"task\" where done = false limit 50'`\n\
+- `sb describe <tag>` samples objects of a tag and reports their observed fields \
+— use it to learn a tag's shape before querying.\n\
+- `sb lua` evaluates a Space Lua expression via the Runtime API, e.g. \
+`sb lua 'return 1 + 1'`.\n\
+- `query`/`lua`/`describe` need the server's Runtime API; on a transient 5xx just \
+after a space reload, wait a moment and retry.\n\
+\n## Recipes\n\
 - Append to today's journal: `sb daily \"text\"`\n\
 - Create or overwrite a page: `sb page create Name --content \"...\" --upsert`\n\
 - Read a page as JSON: `sb page read Name --format json`\n\
 - List page names only: `sb page list --fields name --format json`\n\
-- Run an index query: `sb query 'from index.tag \"task\" limit 20'`\n\
 - Preview a destructive op first: `sb page delete Name --dry-run`\n\
-- Sync with the server: `sb sync`\n\n\
+- Sync with the server: `sb sync` (or `sb sync pull` / `push` / `status`)\n\n\
 ## Safety\n\
 - `sb shell` runs commands on the server and is DISABLED by default — do not \
 rely on it; it is destructive and gated.\n\
@@ -212,6 +222,15 @@ mod tests {
         assert!(body.contains("SB_TOKEN"), "should mention SB_TOKEN");
         assert!(body.contains("`sb daily`"), "should list the daily command");
         assert!(body.contains("`sb page`"), "should list the page command");
+        // Generic SilverBullet querying/scripting guidance (SLIQ + Space Lua).
+        assert!(
+            body.contains("index.tag"),
+            "should show SLIQ query examples"
+        );
+        assert!(
+            body.contains("sb lua"),
+            "should mention Space Lua evaluation"
+        );
         // `sb shell` safety warning is required.
         assert!(body.contains("DISABLED by default"));
     }
