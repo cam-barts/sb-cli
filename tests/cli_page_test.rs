@@ -126,6 +126,31 @@ fn page_list_format_json_outputs_valid_json_array() {
 }
 
 #[test]
+fn page_list_fields_trims_json_to_named_keys() {
+    let dir = setup_space();
+    write_page(&dir, "alpha", "content a");
+
+    let output = sb_cmd(&dir)
+        .args(["page", "list", "--format", "json", "--fields", "name"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let parsed: serde_json::Value =
+        serde_json::from_str(&String::from_utf8(output).unwrap()).expect("valid JSON");
+    let arr = parsed.as_array().expect("array");
+    for entry in arr {
+        assert!(entry.get("name").is_some(), "name kept");
+        assert!(
+            entry.get("modified").is_none(),
+            "modified should be trimmed by --fields name"
+        );
+    }
+}
+
+#[test]
 fn page_list_limit_restricts_output_count() {
     let dir = setup_space();
     write_page(&dir, "page-a", "content");

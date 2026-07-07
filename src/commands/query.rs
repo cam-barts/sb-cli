@@ -6,6 +6,7 @@ use crate::error::{SbError, SbResult};
 pub async fn execute(
     cli_token: Option<&str>,
     query: &str,
+    fields: &[String],
     format: &OutputFormat,
     quiet: bool,
     _color: bool,
@@ -60,11 +61,9 @@ pub async fn execute(
 
     match format {
         OutputFormat::Json => {
-            // Raw JSON output
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&result).unwrap_or_default()
-            );
+            // Raw JSON output, trimmed to --fields when requested.
+            let out = crate::output::filter_json_fields(&result, fields);
+            println!("{}", serde_json::to_string_pretty(&out).unwrap_or_default());
         }
         OutputFormat::Human => {
             // Table format for arrays of objects, JSON fallback otherwise
@@ -192,6 +191,7 @@ mod tests {
         let err = execute(
             None,
             "from index.tag 'page'",
+            &[],
             &OutputFormat::Json,
             true,
             false,
@@ -215,7 +215,7 @@ mod tests {
         enable_runtime(tmp.path());
         let _g = SbSpaceGuard::set(tmp.path());
 
-        let err = execute(None, "garbage", &OutputFormat::Json, true, false)
+        let err = execute(None, "garbage", &[], &OutputFormat::Json, true, false)
             .await
             .unwrap_err();
         match err {
@@ -238,7 +238,7 @@ mod tests {
         enable_runtime(tmp.path());
         let _g = SbSpaceGuard::set(tmp.path());
 
-        let res = execute(None, "from a", &OutputFormat::Human, true, false).await;
+        let res = execute(None, "from a", &[], &OutputFormat::Human, true, false).await;
         assert!(res.is_ok(), "{res:?}");
     }
 
@@ -254,7 +254,7 @@ mod tests {
         enable_runtime(tmp.path());
         let _g = SbSpaceGuard::set(tmp.path());
 
-        let res = execute(None, "from b", &OutputFormat::Human, true, false).await;
+        let res = execute(None, "from b", &[], &OutputFormat::Human, true, false).await;
         assert!(res.is_ok());
     }
 
@@ -270,7 +270,7 @@ mod tests {
         enable_runtime(tmp.path());
         let _g = SbSpaceGuard::set(tmp.path());
 
-        let res = execute(None, "from c", &OutputFormat::Human, true, false).await;
+        let res = execute(None, "from c", &[], &OutputFormat::Human, true, false).await;
         assert!(res.is_ok());
     }
 
@@ -286,7 +286,7 @@ mod tests {
         enable_runtime(tmp.path());
         let _g = SbSpaceGuard::set(tmp.path());
 
-        let err = execute(None, "from d", &OutputFormat::Json, true, false)
+        let err = execute(None, "from d", &[], &OutputFormat::Json, true, false)
             .await
             .unwrap_err();
         match err {

@@ -102,10 +102,15 @@ async fn main() {
         Some(Commands::Page { command }) => {
             debug!("dispatching: page");
             match command {
-                PageCommands::List { sort, limit } => {
+                PageCommands::List {
+                    sort,
+                    limit,
+                    fields,
+                } => {
                     commands::page::execute_list(
                         &sort,
                         limit,
+                        &fields,
                         &format,
                         cli.quiet,
                         output_config.color,
@@ -296,11 +301,12 @@ async fn main() {
             )
             .await
         }
-        Some(Commands::Query { query }) => {
+        Some(Commands::Query { query, fields }) => {
             debug!("dispatching: query");
             commands::query::execute(
                 cli.token.as_deref(),
                 &query,
+                &fields,
                 &format,
                 cli.quiet,
                 output_config.color,
@@ -345,12 +351,17 @@ async fn main() {
             )
             .await
         }
-        Some(Commands::Describe { tag, limit }) => {
+        Some(Commands::Describe {
+            tag,
+            limit,
+            out_fields,
+        }) => {
             debug!("dispatching: describe");
             commands::describe::execute(
                 cli.token.as_deref(),
                 &tag,
                 limit,
+                &out_fields,
                 &format,
                 cli.quiet,
                 output_config.color,

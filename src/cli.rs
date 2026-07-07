@@ -187,6 +187,9 @@ pub enum Commands {
     Query {
         /// Query expression (e.g., "from tags.page limit 10")
         query: String,
+        /// Restrict JSON output to these comma-separated top-level fields
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
     },
     /// Execute a command on the server via the shell endpoint
     Shell {
@@ -220,6 +223,10 @@ pub enum Commands {
         /// Number of objects to sample when inferring the schema
         #[arg(long, default_value_t = 100)]
         limit: usize,
+        /// Restrict JSON output to these comma-separated top-level fields
+        /// (`tag`, `sampled`, `fields`)
+        #[arg(long = "fields", value_delimiter = ',', value_name = "FIELD,...")]
+        out_fields: Vec<String>,
     },
     /// Work with page templates (pages tagged `template`)
     Template {
@@ -418,6 +425,9 @@ pub enum PageCommands {
         /// Limit number of results
         #[arg(long)]
         limit: Option<usize>,
+        /// Restrict JSON output to these comma-separated top-level fields
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
     },
     /// Read a page's content
     Read {

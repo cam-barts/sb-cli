@@ -96,6 +96,35 @@ pub fn print_error(error: &crate::error::SbError, color: bool, format: &crate::c
     }
 }
 
+/// Trim a JSON value to only the named top-level fields so agents can request
+/// just what they need and not spend context on large objects. Applies to
+/// objects and to arrays of objects (each element is filtered); scalars and
+/// other values pass through unchanged. Field names absent from a given object
+/// are simply omitted, and an empty `fields` slice is a no-op.
+pub fn filter_json_fields(value: &serde_json::Value, fields: &[String]) -> serde_json::Value {
+    if fields.is_empty() {
+        return value.clone();
+    }
+    match value {
+        serde_json::Value::Array(items) => serde_json::Value::Array(
+            items
+                .iter()
+                .map(|v| filter_json_fields(v, fields))
+                .collect(),
+        ),
+        serde_json::Value::Object(map) => {
+            let mut out = serde_json::Map::new();
+            for field in fields {
+                if let Some(v) = map.get(field) {
+                    out.insert(field.clone(), v.clone());
+                }
+            }
+            serde_json::Value::Object(out)
+        }
+        other => other.clone(),
+    }
+}
+
 /// Render an error as a compact JSON object: `{ "error", "code", "remediation" }`.
 /// `remediation` is `null` when the error carries no actionable hint.
 pub fn format_error_json(error: &crate::error::SbError) -> String {
@@ -299,6 +328,31 @@ mod tests {
         assert!(
             output.contains("->"),
             "error with hint should contain -> arrow"
+        );
+    }
+
+    #[test]
+    fn filter_json_fields_trims_object_to_named_keys() {
+        let v = serde_json::json!({"name": "a", "size": 10, "modified": "x"});
+        let out = filter_json_fields(&v, &["name".into(), "size".into()]);
+        assert_eq!(out, serde_json::json!({"name": "a", "size": 10}));
+    }
+
+    #[test]
+    fn filter_json_fields_applies_per_element_in_arrays() {
+        let v = serde_json::json!([{"name": "a", "x": 1}, {"name": "b", "x": 2}]);
+        let out = filter_json_fields(&v, &["name".into()]);
+        assert_eq!(out, serde_json::json!([{"name": "a"}, {"name": "b"}]));
+    }
+
+    #[test]
+    fn filter_json_fields_empty_is_noop_and_ignores_unknown() {
+        let v = serde_json::json!({"name": "a"});
+        assert_eq!(filter_json_fields(&v, &[]), v);
+        // Unknown field -> simply absent (empty object here).
+        assert_eq!(
+            filter_json_fields(&v, &["missing".into()]),
+            serde_json::json!({})
         );
     }
 

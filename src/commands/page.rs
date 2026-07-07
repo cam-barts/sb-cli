@@ -228,6 +228,7 @@ fn format_system_time_iso(t: std::time::SystemTime) -> String {
 pub async fn execute_list(
     sort: &SortField,
     limit: Option<usize>,
+    fields: &[String],
     format: &OutputFormat,
     quiet: bool,
     color: bool,
@@ -279,9 +280,13 @@ pub async fn execute_list(
                     modified: format_system_time_iso(e.modified_time),
                 })
                 .collect();
+            let value = serde_json::to_value(&json_entries).map_err(|e| SbError::Config {
+                message: format!("failed to serialize page list: {e}"),
+            })?;
+            let value = crate::output::filter_json_fields(&value, fields);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&json_entries).map_err(|e| {
+                serde_json::to_string_pretty(&value).map_err(|e| {
                     SbError::Config {
                         message: format!("failed to serialize page list: {e}"),
                     }
@@ -839,9 +844,16 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "Notes", "# Notes");
             seed_page(tmp.path(), "Journal/2026-01-01", "# Day one");
-            execute_list(&SortField::Name, None, &OutputFormat::Human, true, false)
-                .await
-                .expect("list");
+            execute_list(
+                &SortField::Name,
+                None,
+                &[],
+                &OutputFormat::Human,
+                true,
+                false,
+            )
+            .await
+            .expect("list");
         }
 
         #[tokio::test]
@@ -851,9 +863,16 @@ mod tests {
             for i in 0..5 {
                 seed_page(tmp.path(), &format!("p{i}"), "x");
             }
-            execute_list(&SortField::Name, Some(2), &OutputFormat::Json, true, false)
-                .await
-                .expect("list with limit");
+            execute_list(
+                &SortField::Name,
+                Some(2),
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("list with limit");
         }
 
         #[tokio::test]
@@ -862,9 +881,16 @@ mod tests {
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "a", "x");
             seed_page(tmp.path(), "b", "y");
-            execute_list(&SortField::Modified, None, &OutputFormat::Json, true, false)
-                .await
-                .expect("sort modified");
+            execute_list(
+                &SortField::Modified,
+                None,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("sort modified");
         }
 
         #[tokio::test]
@@ -872,9 +898,16 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "a", "x");
-            execute_list(&SortField::Created, None, &OutputFormat::Json, true, false)
-                .await
-                .expect("sort created");
+            execute_list(
+                &SortField::Created,
+                None,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("sort created");
         }
 
         // --- execute_read ---
