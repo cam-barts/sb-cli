@@ -241,6 +241,12 @@ pub enum Commands {
         #[arg(long)]
         install: bool,
     },
+    /// Update sb to the latest GitHub release (matching this build's flavor)
+    Upgrade {
+        /// Report whether a newer release is available without installing it
+        #[arg(long)]
+        check: bool,
+    },
     /// Emit the full command surface as machine-readable JSON (source of truth for agents)
     #[cfg(feature = "skills")]
     Schema,

@@ -20,4 +20,5 @@ pub mod shell;
 pub mod skills;
 pub mod sync;
 pub mod template;
+pub mod upgrade;
 pub mod version;

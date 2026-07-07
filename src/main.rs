@@ -420,6 +420,23 @@ async fn main() {
             debug!("dispatching: completions");
             commands::completions::execute(shell, install, cli.quiet, output_config.color)
         }
+        Some(Commands::Upgrade { check }) => {
+            debug!("dispatching: upgrade");
+            // self_update uses a blocking HTTP client — run it off the async
+            // runtime to avoid a nested-runtime panic.
+            let quiet = cli.quiet;
+            let color = output_config.color;
+            match tokio::task::spawn_blocking(move || {
+                commands::upgrade::execute(check, quiet, color)
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => Err(sb_cli::error::SbError::Internal {
+                    message: format!("upgrade task failed: {e}"),
+                }),
+            }
+        }
         #[cfg(feature = "skills")]
         Some(Commands::Schema) => {
             debug!("dispatching: schema");

@@ -23,19 +23,35 @@ Work with your SilverBullet notes from the terminal. Pages live on your local fi
 
 ## Installation
 
+### Slim vs. AI builds
+
+`sb` ships in two flavors that are otherwise identical — the AI build is a strict
+superset (the `sb` command works the same either way):
+
+- **slim** (default): the full notes/sync/journal CLI, zero AI surface, no heavy
+  dependencies. This is what you want unless you drive `sb` with an AI agent.
+- **ai**: adds `sb mcp serve` (a [Model Context Protocol](https://modelcontextprotocol.io)
+  server) and `sb skills init` (generates agent instruction files). Opt-in via
+  the `ai` Cargo feature. `sb version` reports which flavor you have (`features:`).
+
+Because Cargo features are resolved at **compile time**, the flavor is chosen
+when you install/build — a downloaded slim binary can't be toggled to AI in
+place; you install the other artifact (or rebuild with `--features ai`).
+
 ### From GitHub Releases
 
 Download the latest release for your platform from the [releases page](https://github.com/cam-barts/sb-cli/releases/latest).
+Pick the `sb-*` archive for the slim flavor or the `sb-ai-*` archive for the AI flavor.
 
-| Platform | Archive |
-|----------|---------|
-| Linux (x86_64) | `sb-v*-x86_64-unknown-linux-gnu.tar.gz` |
-| Linux (aarch64) | `sb-v*-aarch64-unknown-linux-gnu.tar.gz` |
-| macOS (Intel) | `sb-v*-x86_64-apple-darwin.tar.gz` |
-| macOS (Apple Silicon) | `sb-v*-aarch64-apple-darwin.tar.gz` |
-| Windows (x86_64) | `sb-v*-x86_64-pc-windows-msvc.zip` |
+| Platform | Slim archive | AI archive |
+|----------|--------------|------------|
+| Linux (x86_64) | `sb-v*-x86_64-unknown-linux-gnu.tar.gz` | `sb-ai-v*-x86_64-unknown-linux-gnu.tar.gz` |
+| Linux (aarch64) | `sb-v*-aarch64-unknown-linux-gnu.tar.gz` | `sb-ai-v*-aarch64-unknown-linux-gnu.tar.gz` |
+| macOS (Intel) | `sb-v*-x86_64-apple-darwin.tar.gz` | `sb-ai-v*-x86_64-apple-darwin.tar.gz` |
+| macOS (Apple Silicon) | `sb-v*-aarch64-apple-darwin.tar.gz` | `sb-ai-v*-aarch64-apple-darwin.tar.gz` |
+| Windows (x86_64) | `sb-v*-x86_64-pc-windows-msvc.zip` | `sb-ai-v*-x86_64-pc-windows-msvc.zip` |
 
-Example (Linux x86_64):
+Example (Linux x86_64, slim):
 
 ```sh
 curl -LO https://github.com/cam-barts/sb-cli/releases/latest/download/sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
@@ -43,18 +59,28 @@ tar xzf sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
 sudo mv sb /usr/local/bin/
 ```
 
+Once installed, `sb upgrade` self-updates to the latest release of the **same
+flavor** (an AI build only pulls `sb-ai-*` assets, a slim build only `sb-*`);
+`sb upgrade --check` reports whether a newer release is available without
+installing it.
+
 ### From source
 
 ```sh
+# Slim (default):
 cargo install --git https://github.com/cam-barts/sb-cli
+# AI build (adds `sb mcp serve` + `sb skills init`):
+cargo install --git https://github.com/cam-barts/sb-cli --features ai
 ```
 
-Or build locally:
+`cargo binstall sb-cli` fetches the prebuilt slim release tarball instead of
+compiling. Or build locally:
 
 ```sh
 git clone https://github.com/cam-barts/sb-cli
 cd sb-cli
-cargo build --release
+cargo build --release                 # slim
+cargo build --release --features ai   # ai
 # Binary at target/release/sb
 ```
 

@@ -13,11 +13,21 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.target }}
+    name: Build ${{ matrix.variant }} ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
+        # slim = default build (no AI surface); ai = --features ai (mcp + skills).
+        # Both flavors are built for every target: 2 x 5 = 10 artifacts. The
+        # binary inside is always `sb`; the flavor lives only in the asset name.
+        variant: [slim, ai]
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+          - x86_64-pc-windows-msvc
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
@@ -41,6 +51,11 @@ jobs:
             artifact: sb.exe
             archive: zip
 
+    env:
+      # `sb` for slim, `sb-ai` for the ai flavor — used in the asset filename.
+      PREFIX: ${{ matrix.variant == 'ai' && 'sb-ai' || 'sb' }}
+      FEATURES: ${{ matrix.variant == 'ai' && '--features ai' || '' }}
+
     steps:
       - uses: actions/checkout@v4
 
@@ -50,7 +65,7 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: ${{ matrix.variant }}-${{ matrix.target }}
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux' && !matrix.cross
@@ -62,29 +77,29 @@ jobs:
 
       - name: Build (native)
         if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} ${{ env.FEATURES }}
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }}
+        run: cross build --release --target ${{ matrix.target }} ${{ env.FEATURES }}
 
       - name: Package (Unix)
         if: matrix.archive == 'tar.gz'
         run: |
           cd target/${{ matrix.target }}/release
-          tar czf ../../../sb-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
+          tar czf ../../../${{ env.PREFIX }}-${{ github.ref_name }}-${{ matrix.target }}.tar.gz ${{ matrix.artifact }}
 
       - name: Package (Windows)
         if: matrix.archive == 'zip'
         shell: pwsh
         run: |
           cd target/${{ matrix.target }}/release
-          Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ../../../sb-${{ github.ref_name }}-${{ matrix.target }}.zip
+          Compress-Archive -Path ${{ matrix.artifact }} -DestinationPath ../../../${{ env.PREFIX }}-${{ github.ref_name }}-${{ matrix.target }}.zip
 
       - uses: actions/upload-artifact@v4
         with:
-          name: sb-${{ matrix.target }}
-          path: sb-${{ github.ref_name }}-${{ matrix.target }}.*
+          name: ${{ env.PREFIX }}-${{ matrix.target }}
+          path: ${{ env.PREFIX }}-${{ github.ref_name }}-${{ matrix.target }}.*
 
   release:
     name: Create Release

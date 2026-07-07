@@ -9,6 +9,17 @@ readme = "README.md"
 keywords = ["silverbullet", "cli", "sync", "notes", "markdown"]
 categories = ["command-line-utilities"]
 
+# Let `cargo binstall sb-cli` fetch the prebuilt release tarball instead of
+# compiling. Points at this repo's own GitHub-release assets (slim flavor);
+# `sb upgrade` handles flavor-aware in-place updates thereafter.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/sb-v{ version }-{ target }{ archive-suffix }"
+pkg-fmt = "tgz"
+bin-dir = "{ bin }{ binary-ext }"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [[bin]]
 name = "sb"
 path = "src/main.rs"
@@ -47,6 +58,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 bytes = "1.11.1"
 percent-encoding = "2.3"
+# `sb upgrade` self-update from GitHub releases. rustls to match reqwest above;
+# tar.gz (unix) + zip (windows) to match the release archive formats.
+self_update = { version = "0.44", default-features = false, features = [
+    "reqwest",
+    "rustls",
+    "archive-tar",
+    "compression-flate2",
+    "archive-zip",
+    "compression-zip-deflate",
+] }
 
 [dev-dependencies]
 wiremock = "0.6"
