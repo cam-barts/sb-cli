@@ -327,42 +327,11 @@ pub fn list_daily_files(
     Ok(out)
 }
 
-/// Fetch template content: try local file first, then remote.
-///
-/// Returns `None` when the template cannot be found in either location.
-async fn fetch_template_content(
-    content_dir: &Path,
-    template_name: &str,
-    config: &ResolvedConfig,
-    cli_token: Option<&str>,
-) -> SbResult<Option<String>> {
-    let local_path = content_dir.join(format!("{}.md", template_name));
-    if local_path.exists() {
-        let content = std::fs::read_to_string(&local_path).map_err(|e| SbError::Filesystem {
-            message: "failed to read template".into(),
-            path: local_path.display().to_string(),
-            source: Some(e),
-        })?;
-        return Ok(Some(content));
-    }
-
-    if let Some(ref url) = config.server_url.value {
-        match crate::config::resolve_token(cli_token, config) {
-            Ok(token) => {
-                let client = crate::client::SbClient::new(url, &token)?;
-                match client.get_page(template_name).await {
-                    Ok(content) => return Ok(Some(content)),
-                    Err(SbError::PageNotFound { .. }) => return Ok(None),
-                    Err(e) => return Err(e),
-                }
-            }
-            Err(SbError::TokenNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e),
-        }
-    }
-
-    Ok(None)
-}
+// Template fetching (local file first, then remote) is shared with
+// `page create` and `template new`; the implementation lives in the template
+// module. Re-exported here so existing call sites and tests keep resolving
+// `fetch_template_content` within this module.
+use crate::commands::template::fetch_template_content;
 
 /// Ensure the day's note file exists. Creates parent dirs and applies the
 /// configured template if the file is being created for the first time.

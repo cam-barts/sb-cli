@@ -1,4 +1,5 @@
 pub mod auth;
+pub mod completions;
 pub mod config;
 pub mod daily;
 pub mod describe;
@@ -6,9 +7,11 @@ pub mod init;
 pub mod logs;
 pub mod lua;
 pub mod page;
+pub mod picker;
 pub mod query;
 pub mod screenshot;
 pub mod server;
 pub mod shell;
 pub mod sync;
+pub mod template;
 pub mod version;

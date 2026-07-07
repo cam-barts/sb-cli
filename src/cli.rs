@@ -193,6 +193,19 @@ pub enum Commands {
         #[arg(long, default_value_t = 100)]
         limit: usize,
     },
+    /// Work with page templates (pages tagged `template`)
+    Template {
+        #[command(subcommand)]
+        command: TemplateCommands,
+    },
+    /// Generate or install shell completion scripts
+    Completions {
+        /// Shell to generate for. Auto-detected from $SHELL when omitted with --install.
+        shell: Option<clap_complete::Shell>,
+        /// Install to the standard location for the shell instead of printing to stdout
+        #[arg(long)]
+        install: bool,
+    },
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]
@@ -256,6 +269,26 @@ pub enum SyncCommands {
 }
 
 #[derive(Subcommand)]
+pub enum TemplateCommands {
+    /// List pages tagged as templates
+    List,
+    /// Create a new page from a template (interactive picker when --template is omitted)
+    New {
+        /// Page name to create (without .md extension). When omitted, the
+        /// template's `suggestedName` is used (confirmed interactively unless the
+        /// template sets `confirmName: false`).
+        name: Option<String>,
+        /// Template page to use (skips the picker)
+        #[arg(long)]
+        template: Option<String>,
+        /// Do not open the new page in $EDITOR after creation (opens by default
+        /// when running in a terminal)
+        #[arg(long)]
+        no_edit: bool,
+    },
+}
+
+#[derive(Subcommand)]
 pub enum ConfigCommands {
     /// Display resolved configuration with source annotations
     Show {
@@ -303,8 +336,8 @@ pub enum PageCommands {
     },
     /// Read a page's content
     Read {
-        /// Page name (without .md extension)
-        name: String,
+        /// Page name (without .md extension). Omit to pick interactively.
+        name: Option<String>,
         /// Fetch from server instead of local
         #[arg(long)]
         remote: bool,
@@ -325,13 +358,13 @@ pub enum PageCommands {
     },
     /// Edit a page in $EDITOR
     Edit {
-        /// Page name (without .md extension)
-        name: String,
+        /// Page name (without .md extension). Omit to pick interactively.
+        name: Option<String>,
     },
     /// Delete a page
     Delete {
-        /// Page name (without .md extension)
-        name: String,
+        /// Page name (without .md extension). Omit to pick interactively.
+        name: Option<String>,
         /// Skip confirmation prompt
         #[arg(long)]
         force: bool,
