@@ -185,7 +185,7 @@ pub enum Commands {
     },
     /// Execute an index query via the Runtime API
     Query {
-        /// Query expression (e.g., "from tags.page limit 10")
+        /// Query expression (e.g., `from index.tag "page" limit 10`)
         query: String,
         /// Restrict JSON output to these comma-separated top-level fields
         #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
@@ -218,7 +218,7 @@ pub enum Commands {
     },
     /// Describe the observed schema of objects tagged with the given name
     Describe {
-        /// Tag name to introspect (e.g. task, page, template)
+        /// Tag name to introspect (e.g. task, page, link)
         tag: String,
         /// Number of objects to sample when inferring the schema
         #[arg(long, default_value_t = 100)]
@@ -228,7 +228,7 @@ pub enum Commands {
         #[arg(long = "fields", value_delimiter = ',', value_name = "FIELD,...")]
         out_fields: Vec<String>,
     },
-    /// Work with page templates (pages tagged `template`)
+    /// Work with page templates (pages tagged `meta/template/page`)
     Template {
         #[command(subcommand)]
         command: TemplateCommands,
@@ -298,9 +298,9 @@ pub enum SkillsTarget {
 #[cfg(feature = "mcp")]
 #[derive(Subcommand)]
 pub enum McpCommands {
-    /// Serve over stdio (default) or Streamable HTTP (--http)
+    /// Serve as an MCP server over stdio (JSON-RPC on stdin/stdout)
     Serve {
-        /// Serve over Streamable HTTP instead of stdio (binds a local port)
+        /// Reserved for a Streamable HTTP transport (not yet implemented)
         #[arg(long)]
         http: bool,
     },
@@ -368,7 +368,7 @@ pub enum SyncCommands {
 
 #[derive(Subcommand)]
 pub enum TemplateCommands {
-    /// List pages tagged as templates
+    /// List pages tagged `meta/template/page`
     List,
     /// Create a new page from a template (interactive picker when --template is omitted)
     New {

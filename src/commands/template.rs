@@ -72,7 +72,7 @@ pub struct TemplateInfo {
 // Commands
 // ---------------------------------------------------------------------------
 
-/// `sb template list` — list pages tagged as templates.
+/// `sb template list` — list pages tagged `meta/template/page`.
 pub async fn execute_list(
     cli_token: Option<&str>,
     format: &OutputFormat,
