@@ -298,11 +298,14 @@ pub enum SkillsTarget {
 #[cfg(feature = "mcp")]
 #[derive(Subcommand)]
 pub enum McpCommands {
-    /// Serve as an MCP server over stdio (JSON-RPC on stdin/stdout)
+    /// Serve as an MCP server over stdio (default) or Streamable HTTP (--http)
     Serve {
-        /// Reserved for a Streamable HTTP transport (not yet implemented)
+        /// Serve over Streamable HTTP instead of stdio (endpoint: /mcp)
         #[arg(long)]
         http: bool,
+        /// Address to bind for --http (default: 127.0.0.1:8787)
+        #[arg(long, value_name = "HOST:PORT", requires = "http")]
+        addr: Option<String>,
     },
 }
 

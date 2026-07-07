@@ -1,6 +1,6 @@
 //! `sb mcp serve` — run sb as a Model Context Protocol server over the same core
 //! as the CLI (one source of truth, two interfaces). Defaults to stdio (local
-//! subprocess, zero network); Streamable HTTP is not yet implemented.
+//! subprocess, zero network) or Streamable HTTP behind `--http`.
 //!
 //! CRITICAL: in stdio mode nothing may be written to stdout except JSON-RPC —
 //! all diagnostics must go to stderr, or the protocol stream is corrupted. This
@@ -15,7 +15,12 @@
 // When the `mcp` feature is disabled the module still compiles (it is declared
 // unconditionally in `commands/mod.rs`), but `execute_serve` is a thin stub.
 #[cfg(not(feature = "mcp"))]
-pub async fn execute_serve(_http: bool, _quiet: bool, _color: bool) -> crate::error::SbResult<()> {
+pub async fn execute_serve(
+    _http: bool,
+    _addr: Option<String>,
+    _quiet: bool,
+    _color: bool,
+) -> crate::error::SbResult<()> {
     Err(crate::error::SbError::Usage(
         "this `sb` binary was built without the `mcp` feature".into(),
     ))
@@ -33,11 +38,18 @@ mod imp {
         },
         model::{Implementation, ServerCapabilities, ServerInfo},
         tool, tool_handler, tool_router,
-        transport::io::stdio,
+        transport::{
+            io::stdio,
+            streamable_http_server::{
+                session::local::LocalSessionManager, StreamableHttpServerConfig,
+                StreamableHttpService,
+            },
+        },
         ErrorData, ServerHandler, ServiceExt,
     };
     use schemars::JsonSchema;
     use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
 
     use crate::commands::page::{
         find_content_dir, find_space_root, resolve_page_path, validate_page_path,
@@ -348,15 +360,21 @@ mod imp {
         Ok(format!("appended to {}", page_name))
     }
 
-    /// Run the MCP server. stdio is the supported transport; `--http` is not yet
-    /// implemented.
-    pub async fn execute_serve(http: bool, _quiet: bool, _color: bool) -> SbResult<()> {
+    /// Default bind address for the Streamable HTTP transport.
+    const DEFAULT_HTTP_ADDR: &str = "127.0.0.1:8787";
+
+    /// Run the MCP server over stdio (default) or Streamable HTTP (`--http`).
+    pub async fn execute_serve(
+        http: bool,
+        addr: Option<String>,
+        quiet: bool,
+        _color: bool,
+    ) -> SbResult<()> {
         if http {
-            return Err(SbError::Usage(
-                "HTTP transport not yet supported; use stdio".into(),
-            ));
+            return serve_http(addr, quiet).await;
         }
-        // Diagnostics go to stderr via tracing — stdout carries only JSON-RPC.
+        // stdio: diagnostics go to stderr via tracing — stdout carries only
+        // JSON-RPC, so nothing here may write to stdout.
         tracing::info!("starting sb MCP server on stdio");
         let running = SbMcpServer::new()
             .serve(stdio())
@@ -367,6 +385,41 @@ mod imp {
         running.waiting().await.map_err(|e| SbError::Config {
             message: format!("MCP server terminated abnormally: {e}"),
         })?;
+        Ok(())
+    }
+
+    /// Serve over Streamable HTTP at `<addr>/mcp`, mounting rmcp's tower service
+    /// on an axum router. A fresh `SbMcpServer` is created per session; sessions
+    /// are held in memory (`LocalSessionManager`). Binds loopback by default;
+    /// rmcp's default config restricts the `Host` header to localhost.
+    async fn serve_http(addr: Option<String>, quiet: bool) -> SbResult<()> {
+        let bind = addr.unwrap_or_else(|| DEFAULT_HTTP_ADDR.to_string());
+
+        let service = StreamableHttpService::new(
+            || Ok(SbMcpServer::new()),
+            Arc::new(LocalSessionManager::default()),
+            StreamableHttpServerConfig::default(),
+        );
+        let app = axum::Router::new().nest_service("/mcp", service);
+
+        let listener = tokio::net::TcpListener::bind(&bind)
+            .await
+            .map_err(|e| SbError::Config {
+                message: format!("failed to bind {bind}: {e}"),
+            })?;
+
+        // HTTP mode: stdout is not a protocol channel, but keep diagnostics on
+        // stderr for consistency. Announce the endpoint unless suppressed.
+        if !quiet {
+            eprintln!("sb MCP server listening on http://{bind}/mcp");
+        }
+        tracing::info!("sb MCP server listening on http://{bind}/mcp");
+
+        axum::serve(listener, app)
+            .await
+            .map_err(|e| SbError::Config {
+                message: format!("MCP HTTP server error: {e}"),
+            })?;
         Ok(())
     }
 

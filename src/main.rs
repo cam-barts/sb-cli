@@ -455,8 +455,8 @@ async fn main() {
         Some(Commands::Mcp { command }) => {
             debug!("dispatching: mcp");
             match command {
-                sb_cli::cli::McpCommands::Serve { http } => {
-                    commands::mcp::execute_serve(http, cli.quiet, output_config.color).await
+                sb_cli::cli::McpCommands::Serve { http, addr } => {
+                    commands::mcp::execute_serve(http, addr, cli.quiet, output_config.color).await
                 }
             }
         }
