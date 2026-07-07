@@ -386,18 +386,20 @@ fn page_create_path_traversal_is_rejected() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn page_edit_no_editor_returns_error_mentioning_editor() {
+fn page_edit_refuses_non_interactively_without_editor() {
     let dir = setup_space();
     write_page(&dir, "test-page", "# Test Page");
 
+    // The test harness runs without a TTY, so `page edit` refuses up front
+    // (editing needs an interactive $EDITOR) regardless of whether EDITOR is set.
     sb_cmd(&dir)
         .args(["page", "edit", "test-page"])
         .env_remove("EDITOR")
         .env_remove("VISUAL")
         .assert()
         .failure()
-        .code(1)
-        .stderr(predicate::str::contains("editor").or(predicate::str::contains("EDITOR")));
+        .code(2) // Usage / non-interactive
+        .stderr(predicate::str::contains("non-interactive"));
 }
 
 #[test]
@@ -416,16 +418,19 @@ fn page_edit_nonexistent_page_returns_not_found_error() {
 }
 
 #[test]
-fn page_edit_existing_page_with_editor_true_succeeds() {
+fn page_edit_refuses_non_interactively_even_with_editor_set() {
     let dir = setup_space();
     write_page(&dir, "test-page", "# Test Page");
 
-    // EDITOR=true succeeds immediately without modifying the file
+    // Even with EDITOR set, a non-TTY (agent/pipe) invocation refuses rather
+    // than launching an editor that would block on input it cannot provide.
     sb_cmd(&dir)
         .args(["page", "edit", "test-page"])
         .env("EDITOR", "true")
         .assert()
-        .success();
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("non-interactive"));
 }
 
 // ---------------------------------------------------------------------------
@@ -464,20 +469,38 @@ fn page_delete_nonexistent_with_force_returns_error() {
 }
 
 #[test]
-fn page_delete_without_force_and_non_tty_stdin_returns_usage_error() {
+fn page_delete_without_force_and_non_tty_stdin_requires_confirmation() {
     let dir = setup_space();
     write_page(&dir, "safe-page", "# Safe Page");
 
-    // When stdin is piped (non-TTY) and --force is not set, deletion should be refused
+    // When stdin is piped (non-TTY) and neither --force nor --yes is set,
+    // deletion is refused with the confirmation-required contract (exit 6) and
+    // the exact re-run command in the remediation hint.
     sb_cmd(&dir)
         .args(["page", "delete", "safe-page"])
         .write_stdin("") // piping stdin makes it non-TTY
         .assert()
         .failure()
-        .code(2) // Usage error exit code
+        .code(6) // confirmation-required exit code
         .stderr(
-            predicate::str::contains("non-interactive").or(predicate::str::contains("--force")),
+            predicate::str::contains("confirmation required")
+                .and(predicate::str::contains("sb page delete safe-page --yes")),
         );
+    // The page must still exist — nothing was deleted.
+    assert!(dir.path().join("safe-page.md").exists());
+}
+
+#[test]
+fn page_delete_with_yes_flag_deletes_non_interactively() {
+    let dir = setup_space();
+    write_page(&dir, "doomed", "# Doomed");
+
+    sb_cmd(&dir)
+        .args(["page", "delete", "doomed", "--yes"])
+        .write_stdin("")
+        .assert()
+        .success();
+    assert!(!dir.path().join("doomed.md").exists());
 }
 
 // ---------------------------------------------------------------------------

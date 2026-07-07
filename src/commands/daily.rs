@@ -527,6 +527,12 @@ async fn execute_write_or_editor(
         if created {
             output::print_success(&format!("Created {}", page_name), args.color, args.quiet);
         }
+        // Opening the note in $EDITOR is the interactive default; when running
+        // non-interactively the note is already ensured to exist, so we stop
+        // here instead of blocking a script on an editor it cannot drive.
+        if crate::output::no_input() {
+            return Ok(());
+        }
         return open_in_editor(&page_path).await;
     }
 

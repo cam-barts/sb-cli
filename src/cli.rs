@@ -48,6 +48,17 @@ pub struct Cli {
     /// Auth token override (highest precedence)
     #[arg(long, global = true)]
     pub token: Option<String>,
+
+    /// Never prompt: disable interactive pickers, confirmations, and $EDITOR
+    /// launches (also implied when stdin/stdout is not a TTY). Agents should set
+    /// this to guarantee sb never blocks on input it cannot provide.
+    #[arg(long, global = true)]
+    pub no_input: bool,
+
+    /// Assume "yes" to confirmation prompts on destructive operations. Required
+    /// (or `--force`) for agents to run mutations non-interactively.
+    #[arg(long, short = 'y', global = true)]
+    pub yes: bool,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]

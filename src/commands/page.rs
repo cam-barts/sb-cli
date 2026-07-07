@@ -464,7 +464,9 @@ pub async fn execute_create(
         source: Some(e),
     })?;
 
-    if open_editor {
+    // The editor is a convenience after creation; skip it (page is already
+    // written) when running non-interactively so agents/scripts never block.
+    if open_editor && !crate::output::no_input() {
         open_in_editor(&page_path).await?;
     }
 
@@ -487,20 +489,20 @@ pub async fn execute_edit(name: Option<&str>, quiet: bool, _color: bool) -> SbRe
     if !page_path.exists() {
         return Err(SbError::PageNotFound { name });
     }
+    // Editing *is* the operation here, so there's nothing useful to do without
+    // an interactive $EDITOR — fail clearly rather than launching into a pipe.
+    if crate::output::no_input() {
+        return Err(SbError::Usage(format!(
+            "cannot edit '{name}' in non-interactive mode ($EDITOR needs a terminal)"
+        )));
+    }
     open_in_editor(&page_path).await?;
     Ok(())
 }
 
-/// Prompt user for delete confirmation on a TTY.
-///
-/// Non-TTY stdin without --force is a fail-safe: refuse deletion to prevent
-/// scripted deletion without explicit opt-in.
+/// Prompt user for delete confirmation on a TTY. Only called when interactive
+/// input is available; the non-interactive fail-safe lives in `execute_delete`.
 async fn confirm_delete(name: &str) -> SbResult<bool> {
-    if !std::io::stdin().is_terminal() {
-        return Err(SbError::Usage(
-            "cannot confirm deletion in non-interactive mode; use --force".into(),
-        ));
-    }
     let name = name.to_string();
     let confirmed = tokio::task::spawn_blocking(move || -> bool {
         use std::io::Write;
@@ -539,7 +541,16 @@ pub async fn execute_delete(
     if !page_path.exists() {
         return Err(SbError::PageNotFound { name });
     }
-    if !force {
+    if !(force || output::assume_yes()) {
+        // Non-interactive without an explicit opt-in: return a confirmation
+        // envelope (exit 6) with the exact command to re-run, so an agent can
+        // self-correct instead of stalling on a prompt it cannot answer.
+        if output::no_input() {
+            return Err(SbError::ConfirmationRequired {
+                action: format!("delete page '{name}'"),
+                rerun: format!("sb page delete {name} --yes"),
+            });
+        }
         let confirmed = confirm_delete(&name).await?;
         if !confirmed {
             output::print_success("Cancelled", color, quiet);

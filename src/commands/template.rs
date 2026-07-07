@@ -189,7 +189,7 @@ pub async fn execute_new(
 /// not attached to a terminal (so scripts and pipes never block). A missing
 /// `$EDITOR` is tolerated — the page is already written.
 async fn maybe_open_editor(path: &Path, no_edit: bool) -> SbResult<()> {
-    if no_edit || !std::io::stdout().is_terminal() {
+    if no_edit || crate::output::no_input() {
         return Ok(());
     }
     match open_in_editor(path).await {
@@ -247,7 +247,7 @@ async fn resolve_new_page_name(
         return Ok(rendered);
     }
 
-    if !std::io::stdin().is_terminal() {
+    if crate::output::no_input() {
         return Err(SbError::Usage(format!(
             "template suggests a name that needs confirmation{}; \
              pass an explicit name: sb template new <name> --template <t>",

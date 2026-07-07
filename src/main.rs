@@ -29,6 +29,11 @@ async fn main() {
         console::set_colors_enabled_stderr(false);
     }
 
+    // Record interaction flags process-globally so pickers/editor/confirmations
+    // can honor them without every command threading the flags through.
+    output::set_no_input(cli.no_input);
+    output::set_assume_yes(cli.yes);
+
     debug!(
         verbose = cli.verbose,
         quiet = cli.quiet,

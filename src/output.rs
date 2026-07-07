@@ -1,5 +1,34 @@
 use console::Style;
 use std::io::IsTerminal;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Process-global interaction flags, set once in `main` from `--no-input`/`--yes`
+/// (mirroring how color is a process-global toggle). Interactive helpers consult
+/// these instead of every command threading the flags through its signature.
+static NO_INPUT: AtomicBool = AtomicBool::new(false);
+static ASSUME_YES: AtomicBool = AtomicBool::new(false);
+
+/// Record the `--no-input` flag. Call once during startup.
+pub fn set_no_input(value: bool) {
+    NO_INPUT.store(value, Ordering::Relaxed);
+}
+
+/// Record the `--yes`/`--force`-style assume-yes flag. Call once during startup.
+pub fn set_assume_yes(value: bool) {
+    ASSUME_YES.store(value, Ordering::Relaxed);
+}
+
+/// True when interaction is disabled: `--no-input` was passed, or stdin is not a
+/// terminal (an agent/pipe can't answer a prompt either way).
+pub fn no_input() -> bool {
+    NO_INPUT.load(Ordering::Relaxed) || !std::io::stdin().is_terminal()
+}
+
+/// True when destructive operations should proceed without an interactive
+/// confirmation (the user passed `--yes` or a command-level `--force`).
+pub fn assume_yes() -> bool {
+    ASSUME_YES.load(Ordering::Relaxed)
+}
 
 /// Central output configuration derived from CLI flags and environment
 pub struct OutputConfig {
