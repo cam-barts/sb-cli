@@ -336,7 +336,7 @@ use crate::commands::template::fetch_template_content;
 /// Ensure the day's note file exists. Creates parent dirs and applies the
 /// configured template if the file is being created for the first time.
 /// Returns `true` when the file was just created.
-async fn ensure_day_file(
+pub(crate) async fn ensure_day_file(
     page_path: &Path,
     content_dir: &Path,
     config: &ResolvedConfig,
@@ -369,7 +369,7 @@ async fn ensure_day_file(
 
 /// Append a formatted entry to the day's note, prefixing with a newline when
 /// the file already has trailing content.
-fn append_entry(page_path: &Path, entry_md: &str) -> SbResult<()> {
+pub(crate) fn append_entry(page_path: &Path, entry_md: &str) -> SbResult<()> {
     let needs_leading_newline = std::fs::metadata(page_path)
         .map(|m| m.len() > 0)
         .unwrap_or(false)

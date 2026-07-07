@@ -319,7 +319,7 @@ pub async fn execute_list(
 
 /// Collect all page names in the content dir, sorted. Backs the interactive
 /// picker used when a page-name argument is omitted.
-fn list_page_names(content_dir: &Path) -> SbResult<Vec<String>> {
+pub(crate) fn list_page_names(content_dir: &Path) -> SbResult<Vec<String>> {
     let mut names: Vec<String> = collect_pages(content_dir)?
         .into_iter()
         .map(|e| e.name)
