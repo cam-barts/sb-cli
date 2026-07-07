@@ -216,6 +216,29 @@ sb completions zsh
 sb completions zsh --install
 ```
 
+### MCP server (AI build)
+
+The `ai` build exposes `sb` as a [Model Context Protocol](https://modelcontextprotocol.io)
+server over the same core as the CLI, so MCP-native clients (Claude Desktop,
+Cursor, VS Code, …) can call it with typed tools instead of shell strings. Two
+transports:
+
+```sh
+# stdio (default): local subprocess, zero network. Configure your MCP client to
+# launch this command; JSON-RPC flows over stdin/stdout, diagnostics over stderr.
+sb mcp serve
+
+# Streamable HTTP: for networked or multi-client use. Serves at <addr>/mcp.
+sb mcp serve --http                       # binds 127.0.0.1:8787
+sb mcp serve --http --addr 127.0.0.1:9000 # custom bind
+```
+
+It exposes a small, outcome-oriented tool set — `page_list`, `page_read`,
+`query`, `server_ping` (read-only), plus `daily_append` and `page_create`
+(additive) — each annotated so clients can auto-approve reads and gate writes.
+The HTTP transport restricts the `Host` header to localhost by default. This
+subcommand exists only in the `ai` build (`sb version` shows `features: …ai…`).
+
 ## Commands
 
 Commands that take a page or template name (`page read`/`edit`/`delete`,
