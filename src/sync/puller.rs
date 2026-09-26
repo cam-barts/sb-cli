@@ -11,7 +11,7 @@ use crate::error::{SbError, SbResult};
 use crate::sync::db::StateDb;
 use crate::sync::progress::SyncProgress;
 use crate::sync::scanner::{hash_file, FileFilter};
-use crate::sync::{conflict_stash_path, SyncResult, SyncStateRow, SyncStatus};
+use crate::sync::{SyncResult, SyncStateRow, SyncStatus};
 
 /// Summary of a pull operation.
 #[derive(Debug, Default)]
@@ -112,16 +112,15 @@ pub async fn pull(
                         String::new() // file doesn't exist locally, treat as unmodified
                     };
 
-                    let stored_local_hash = row.local_hash.as_deref().unwrap_or("");
-                    if local_hash == stored_local_hash || stored_local_hash.is_empty() {
-                        // Local unmodified — safe to download
-                        actions.push(FileAction::Download { meta: meta.clone() });
-                    } else {
-                        // Both sides changed — conflict
-                        actions.push(FileAction::Conflict {
+                    match plan_for_changed_remote(&local_hash, row) {
+                        PullPlan::Download => {
+                            actions.push(FileAction::Download { meta: meta.clone() })
+                        }
+                        PullPlan::Conflict => actions.push(FileAction::Conflict {
                             path: meta.name.clone(),
                             meta: meta.clone(),
-                        });
+                            local_hash,
+                        }),
                     }
                 }
                 // If meta.last_modified == row.remote_mtime: unchanged, skip
@@ -134,8 +133,12 @@ pub async fn pull(
         if server_set.contains(path) {
             continue; // Still on server
         }
-        if row.status == SyncStatus::Conflict {
-            continue; // Already conflicted, skip
+        // A conflict row is already the user's to resolve, and a read-only row
+        // holds an edit the server refused -- which is exactly why the file is
+        // absent from the listing. Neither is evidence of a server-side delete,
+        // and removing either one destroys work with no stash to recover from.
+        if row.status == SyncStatus::Conflict || row.status == SyncStatus::ReadOnly {
+            continue;
         }
 
         let local_path = space_root.join(path);
@@ -163,6 +166,7 @@ pub async fn pull(
             // Local modified but remote deleted — conflict
             actions.push(FileAction::Conflict {
                 path: path.clone(),
+                local_hash,
                 meta: FileMeta {
                     name: path.clone(),
                     last_modified: 0,
@@ -231,8 +235,9 @@ pub async fn pull(
                 result.deleted += 1;
                 result.results.push(sync_result);
             }
-            ActionOutcome::Skipped => {
+            ActionOutcome::Skipped(sync_result) => {
                 result.skipped += 1;
+                result.results.push(sync_result);
             }
         }
         progress.inc();
@@ -283,9 +288,9 @@ pub async fn plan_pull(
     // Phase 1a: Process server files — decisions that don't require hashing, and
     // collect files that need a local hash comparison.
     //
-    // Each entry: (meta, stored_local_hash) — stored_local_hash is "" when the row
-    // has no local_hash recorded, meaning we treat the local file as unmodified.
-    let mut p1_needs_hash: Vec<(FileMeta, String)> = Vec::new();
+    // Each entry: (meta, row) — the row carries both baselines plan_for_changed_remote
+    // needs, since which one applies depends on the row's status.
+    let mut p1_needs_hash: Vec<(FileMeta, SyncStateRow)> = Vec::new();
 
     for meta in &server_files {
         // Skip .sb/ files
@@ -333,8 +338,7 @@ pub async fn plan_pull(
                     // as unmodified (empty hash == stored "" → Download).
                     let local_path = space_root.join(&meta.name);
                     if local_path.exists() {
-                        let stored = row.local_hash.clone().unwrap_or_default();
-                        p1_needs_hash.push((meta.clone(), stored));
+                        p1_needs_hash.push((meta.clone(), row.clone()));
                     } else {
                         // File doesn't exist locally → unmodified, safe to download
                         actions.push(SyncAction::Download {
@@ -351,10 +355,11 @@ pub async fn plan_pull(
 
     // Phase 1b: Hash all Phase-1 candidates in parallel using JoinSet.
     {
-        let mut join_set: tokio::task::JoinSet<Result<(String, i64, String, String), SbError>> =
-            tokio::task::JoinSet::new();
+        let mut join_set: tokio::task::JoinSet<
+            Result<(String, i64, String, SyncStateRow), SbError>,
+        > = tokio::task::JoinSet::new();
 
-        for (meta, stored_local_hash) in p1_needs_hash {
+        for (meta, row) in p1_needs_hash {
             let path = space_root.join(&meta.name);
             let name = meta.name.clone();
             let remote_mtime = meta.last_modified;
@@ -364,29 +369,30 @@ pub async fn plan_pull(
                     path: path.display().to_string(),
                     source: None,
                 })?;
-                Ok((name, remote_mtime, hash, stored_local_hash))
+                Ok((name, remote_mtime, hash, row))
             });
         }
 
         while let Some(result) = join_set.join_next().await {
-            let (name, remote_mtime, local_hash, stored_local_hash) =
+            let (name, remote_mtime, local_hash, row) =
                 result.map_err(|e| SbError::Internal {
                     message: format!("hash task panicked: {e}"),
                 })??;
 
-            if local_hash == stored_local_hash || stored_local_hash.is_empty() {
-                // Local unmodified — safe to download
-                actions.push(SyncAction::Download {
+            match plan_for_changed_remote(&local_hash, &row) {
+                PullPlan::Download => actions.push(SyncAction::Download {
                     path: name,
                     remote_mtime,
                     reason: "remote newer".into(),
-                });
-            } else {
-                // Both sides changed — conflict
-                actions.push(SyncAction::Conflict {
+                }),
+                PullPlan::Conflict => actions.push(SyncAction::Conflict {
                     path: name,
-                    reason: "both local and remote modified".into(),
-                });
+                    reason: if row.status == SyncStatus::ReadOnly {
+                        "remote newer, local edit the server refused".into()
+                    } else {
+                        "both local and remote modified".into()
+                    },
+                }),
             }
         }
     }
@@ -401,8 +407,12 @@ pub async fn plan_pull(
         if server_set.contains(path) {
             continue; // Still on server
         }
-        if row.status == SyncStatus::Conflict {
-            continue; // Already conflicted, skip
+        // A conflict row is already the user's to resolve, and a read-only row
+        // holds an edit the server refused -- which is exactly why the file is
+        // absent from the listing. Neither is evidence of a server-side delete,
+        // and removing either one destroys work with no stash to recover from.
+        if row.status == SyncStatus::Conflict || row.status == SyncStatus::ReadOnly {
+            continue;
         }
 
         let local_path = space_root.join(path);
@@ -462,12 +472,63 @@ pub async fn plan_pull(
     Ok(actions)
 }
 
+/// What pull does with a tracked file whose server copy has moved on.
+#[derive(Debug, PartialEq, Eq)]
+enum PullPlan {
+    Download,
+    Conflict,
+}
+
+/// Choose between overwriting the local file and stashing the server's copy.
+///
+/// `local_hash` is the hash of the file on disk, or "" when it is not there.
+///
+/// On an ordinary row `local_hash` is also the baseline we last recorded, so an
+/// equal hash means there is no local edit to lose. A read-only row's
+/// `local_hash` is the edit the server *refused*, so that same comparison would
+/// read "unmodified" and download straight over the user's work. The baseline
+/// for those rows is `remote_hash`: the last content the two sides agreed on.
+fn plan_for_changed_remote(local_hash: &str, row: &SyncStateRow) -> PullPlan {
+    if local_hash.is_empty() {
+        return PullPlan::Download; // nothing on disk to lose
+    }
+    if row.status == SyncStatus::ReadOnly {
+        return match row.remote_hash.as_deref() {
+            // The refused edit is gone -- back to what the server last gave us,
+            // so the refusal is moot and the download returns the row to synced.
+            Some(agreed) if agreed == local_hash => PullPlan::Download,
+            // Still carrying the refused edit (or never synced at all): the user
+            // gets a conflict and `sb sync resolve`, not a silent overwrite.
+            _ => PullPlan::Conflict,
+        };
+    }
+    let stored = row.local_hash.as_deref().unwrap_or("");
+    if stored.is_empty() || local_hash == stored {
+        PullPlan::Download
+    } else {
+        PullPlan::Conflict
+    }
+}
+
 /// Internal actions computed during phase 1 and 2.
 enum FileAction {
-    Download { meta: FileMeta },
-    Conflict { path: String, meta: FileMeta },
-    DeleteLocal { path: String },
-    DeleteLocalState { path: String },
+    Download {
+        meta: FileMeta,
+    },
+    Conflict {
+        path: String,
+        meta: FileMeta,
+        /// Hash of the local bytes on disk when the conflict was planned. Lets
+        /// the executor notice that the server's copy is the same content and
+        /// that there was never a conflict to report.
+        local_hash: String,
+    },
+    DeleteLocal {
+        path: String,
+    },
+    DeleteLocalState {
+        path: String,
+    },
 }
 
 /// Internal outcomes from executing actions.
@@ -476,8 +537,9 @@ enum ActionOutcome {
     Conflict(SyncResult),
     Deleted(SyncResult),
     DeletedState(SyncResult),
-    #[allow(dead_code)]
-    Skipped, // reserved for future use
+    /// Nothing to transfer, but the `state.db` row still needs the enclosed
+    /// result written — a "conflict" whose two sides held identical bytes.
+    Skipped(SyncResult),
 }
 
 /// Execute a single file action.
@@ -489,7 +551,7 @@ async fn execute_action(
 ) -> SbResult<ActionOutcome> {
     match action {
         FileAction::Download { meta } => {
-            let content = client.get_file(&meta.name).await?;
+            let (content, remote_etag) = client.get_file(&meta.name).await?;
             let local_path = space_root.join(&meta.name);
 
             // Create parent dirs
@@ -512,12 +574,7 @@ async fn execute_action(
                 })?;
 
             // Compute hash and mtime of downloaded content
-            let local_hash = {
-                let bytes = content.to_vec();
-                let mut hasher = blake3::Hasher::new();
-                hasher.update(&bytes);
-                hasher.finalize().to_hex().to_string()
-            };
+            let local_hash = crate::sync::scanner::hash_bytes(&content);
             let remote_hash = local_hash.clone(); // just downloaded, they match
 
             let local_mtime = crate::sync::scanner::mtime_ms_from_path(&local_path).await;
@@ -526,33 +583,48 @@ async fn execute_action(
                 path: meta.name,
                 local_hash,
                 remote_hash,
+                // The server's own ETag for these bytes, kept beside (never
+                // mixed with) the blake3 digests above. `None` on a server
+                // without conditional writes, which pushes unconditionally.
+                remote_etag,
                 remote_mtime: meta.last_modified,
                 local_mtime,
             }))
         }
 
-        FileAction::Conflict { path, meta } => {
+        FileAction::Conflict {
+            path,
+            meta,
+            local_hash,
+        } => {
             // Download remote version and stash it
             if meta.last_modified > 0 {
                 match client.get_file(&path).await {
-                    Ok(content) => {
-                        let stash_path = conflict_stash_path(sb_dir, &path);
-                        if let Some(parent) = stash_path.parent() {
-                            tokio::fs::create_dir_all(parent).await.map_err(|e| {
-                                SbError::Filesystem {
-                                    message: "failed to create conflict stash directory".into(),
-                                    path: parent.display().to_string(),
-                                    source: Some(e),
-                                }
-                            })?;
+                    Ok((content, remote_etag)) => {
+                        // Both sides hold the same bytes, so there is nothing to
+                        // reconcile: only a stale baseline in state.db made this
+                        // look like a conflict. Repair the row instead of stashing.
+                        // Left unrepaired the row re-conflicts on every sync, which
+                        // is how one page collected 86 identical stash files.
+                        let remote_hash = crate::sync::scanner::hash_bytes(&content);
+                        if remote_hash == local_hash {
+                            tracing::info!(
+                                "no conflict on {path}: local and remote content are identical"
+                            );
+                            let local_path = space_root.join(&path);
+                            let local_mtime =
+                                crate::sync::scanner::mtime_ms_from_path(&local_path).await;
+                            return Ok(ActionOutcome::Skipped(SyncResult::Synced {
+                                path,
+                                local_hash,
+                                remote_hash,
+                                remote_etag,
+                                remote_mtime: meta.last_modified,
+                                local_mtime,
+                            }));
                         }
-                        tokio::fs::write(&stash_path, &content).await.map_err(|e| {
-                            SbError::Filesystem {
-                                message: "failed to write conflict stash file".into(),
-                                path: stash_path.display().to_string(),
-                                source: Some(e),
-                            }
-                        })?;
+                        let stash_path =
+                            crate::sync::write_conflict_stash(sb_dir, &path, &content).await?;
                         tracing::warn!(
                             "conflict: {} (remote version stashed to {})",
                             path,
@@ -719,6 +791,7 @@ mod tests {
                 path: "page.md".to_string(),
                 local_hash: original_hash.clone(),
                 remote_hash: original_hash.clone(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 0,
             }])
@@ -779,6 +852,7 @@ mod tests {
                 path: "page.md".to_string(),
                 local_hash: original_hash.to_string(),
                 remote_hash: original_hash.to_string(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 0,
             }])
@@ -825,6 +899,84 @@ mod tests {
         );
     }
 
+    // Test: a stale state.db baseline over content both sides agree on is not a
+    // conflict. This is the Okta Auth0 SRE Manager incident: the row looked
+    // conflicted on every sync for 27 hours and each sync stashed another
+    // byte-identical copy of a file that never differed from the server's.
+    #[tokio::test]
+    async fn pull_repairs_the_row_instead_of_stashing_when_content_is_identical() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+
+        let agreed = b"the one true content";
+        let file_path = dir.path().join("page.md");
+        fs::write(&file_path, agreed).expect("write file");
+
+        // A baseline that matches neither side -- exactly the state that made the
+        // spurious conflict look real.
+        let stale = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233";
+        {
+            let mut db = StateDb::open(&db_path).expect("open db");
+            db.commit_batch(&[SyncResult::Synced {
+                path: "page.md".to_string(),
+                local_hash: stale.to_string(),
+                remote_hash: stale.to_string(),
+                remote_etag: None,
+                remote_mtime: 1700000000000,
+                local_mtime: 0,
+            }])
+            .expect("commit");
+        }
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                make_file_meta("page.md", 1700000001000i64)
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs/page.md"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(std::str::from_utf8(agreed).unwrap()),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri());
+        let sb_dir = dir.path().join(".sb");
+        let result = pull(
+            &client,
+            dir.path(),
+            &sb_dir,
+            &db_path,
+            &make_filter(),
+            4,
+            false,
+        )
+        .await
+        .expect("pull should succeed");
+
+        assert_eq!(result.conflicts, 0, "identical content is not a conflict");
+        assert_eq!(result.skipped, 1, "the row should be repaired, silently");
+        assert!(
+            !dir.path().join(".sb/conflicts").exists(),
+            "nothing should have been stashed"
+        );
+
+        // The repaired row is what stops the next sync re-detecting the conflict.
+        let mut db = StateDb::open(&db_path).expect("open db");
+        db.commit_batch(&result.results).expect("commit");
+        let row = db.get_row("page.md").expect("get row").expect("row exists");
+        assert_eq!(row.status, SyncStatus::Synced);
+        assert_eq!(row.remote_mtime, 1700000001000);
+        assert_eq!(
+            row.local_hash.as_deref(),
+            Some(crate::sync::scanner::hash_bytes(agreed).as_str())
+        );
+    }
+
     // Test: pull on conflict: local file preserved, remote version stashed to .sb/conflicts/
     #[tokio::test]
     async fn pull_conflict_stashes_remote_version_to_sb_conflicts() {
@@ -841,6 +993,7 @@ mod tests {
                 path: "page.md".to_string(),
                 local_hash: original_hash.to_string(),
                 remote_hash: original_hash.to_string(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 0,
             }])
@@ -921,6 +1074,7 @@ mod tests {
                 path: "old-page.md".to_string(),
                 local_hash: original_hash.clone(),
                 remote_hash: original_hash.clone(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 0,
             }])
@@ -970,6 +1124,7 @@ mod tests {
                 path: "page.md".to_string(),
                 local_hash: original_hash.to_string(),
                 remote_hash: original_hash.to_string(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 0,
             }])
@@ -1022,6 +1177,7 @@ mod tests {
                 path: "page.md".to_string(),
                 local_hash: current_hash.clone(),
                 remote_hash: current_hash.clone(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 0,
             }])
@@ -1245,5 +1401,381 @@ mod tests {
                 "{page} should exist after pull"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // ETag capture on pull
+    // ------------------------------------------------------------------
+
+    async fn pull_one(dir: &Path, db_path: &Path, server: &MockServer) -> PullResult {
+        let sb_dir = dir.join(".sb");
+        pull(
+            &make_client(&server.uri()),
+            dir,
+            &sb_dir,
+            db_path,
+            &make_filter(),
+            4,
+            false,
+        )
+        .await
+        .expect("pull should succeed")
+    }
+
+    #[tokio::test]
+    async fn pull_stores_the_etag_it_saw_next_to_the_blake3_hash() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        StateDb::open(&db_path).expect("open db");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                make_file_meta("page.md", 1700000000000i64)
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs/page.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("# Page\n")
+                    .insert_header("ETag", "\"sha256:frompull\""),
+            )
+            .mount(&server)
+            .await;
+
+        let mut result = pull_one(dir.path(), &db_path, &server).await;
+        assert_eq!(result.downloaded, 1);
+
+        let mut db = StateDb::open(&db_path).expect("open db");
+        db.commit_batch(&std::mem::take(&mut result.results))
+            .expect("commit");
+        let row = db.get_row("page.md").expect("get").expect("exists");
+        assert_eq!(row.remote_etag, Some("\"sha256:frompull\"".to_string()));
+        // The blake3 digest of the same bytes is a different string entirely.
+        assert_eq!(row.remote_hash, row.local_hash);
+        assert_ne!(row.remote_hash, row.remote_etag);
+    }
+
+    #[tokio::test]
+    async fn pull_stores_no_etag_when_the_server_sends_none() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        StateDb::open(&db_path).expect("open db");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                make_file_meta("page.md", 1700000000000i64)
+            ])))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs/page.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Page\n"))
+            .mount(&server)
+            .await;
+
+        let mut result = pull_one(dir.path(), &db_path, &server).await;
+        let mut db = StateDb::open(&db_path).expect("open db");
+        db.commit_batch(&std::mem::take(&mut result.results))
+            .expect("commit");
+        assert_eq!(
+            db.get_row("page.md")
+                .expect("get")
+                .expect("exists")
+                .remote_etag,
+            None
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // read-only rows: never deleted, never a dead end
+    // ------------------------------------------------------------------
+
+    /// Seed a read-only row for `path`, hashing whatever is on disk as the
+    /// refused content. `remote` is what the two sides last agreed on, if ever.
+    fn seed_readonly(dir: &Path, db_path: &Path, path: &str, remote: Option<(&str, i64)>) {
+        let refused_hash = hash_file(&dir.join(path)).expect("hash");
+        let db = StateDb::open(db_path).expect("open db");
+        db.upsert_row(&SyncStateRow {
+            path: path.into(),
+            local_hash: Some(refused_hash),
+            remote_hash: remote.map(|(h, _)| h.to_string()),
+            remote_etag: None,
+            remote_mtime: remote.map_or(0, |(_, m)| m),
+            local_mtime: 0,
+            status: SyncStatus::ReadOnly,
+            conflict_at: 0,
+        })
+        .expect("seed row");
+    }
+
+    async fn mock_listing(server: &MockServer, body: serde_json::Value) {
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn pull_does_not_delete_a_file_the_server_refused_to_accept() {
+        // The regression: a refused file is absent from the listing by
+        // definition, and its local_hash matches the disk, so the deletion
+        // phase used to read "unmodified, deleted on the server" and destroy it.
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        let file = dir.path().join("Library/Std/Config.md");
+        fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        fs::write(&file, b"my refused edit").expect("write");
+        seed_readonly(dir.path(), &db_path, "Library/Std/Config.md", None);
+
+        let server = MockServer::start().await;
+        mock_listing(&server, serde_json::json!([])).await;
+
+        let result = pull_one(dir.path(), &db_path, &server).await;
+
+        assert_eq!(result.deleted, 0, "a refused file is not a remote deletion");
+        assert_eq!(
+            fs::read_to_string(&file).expect("the refused file must still exist"),
+            "my refused edit"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_conflicts_and_stashes_when_the_refused_edit_is_still_on_disk() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        let file = dir.path().join("page.md");
+        fs::write(&file, b"my refused edit").expect("write");
+        seed_readonly(
+            dir.path(),
+            &db_path,
+            "page.md",
+            Some(("agreed_hash", 1700000000000)),
+        );
+
+        let server = MockServer::start().await;
+        mock_listing(
+            &server,
+            serde_json::json!([make_file_meta("page.md", 1700000001000i64)]),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs/page.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("the server version"))
+            .mount(&server)
+            .await;
+
+        let mut result = pull_one(dir.path(), &db_path, &server).await;
+        assert_eq!(result.conflicts, 1);
+        assert_eq!(result.downloaded, 0);
+        assert_eq!(
+            fs::read_to_string(&file).expect("read"),
+            "my refused edit",
+            "the edit push could not send must still be on disk"
+        );
+
+        let stashes: Vec<_> = fs::read_dir(dir.path().join(".sb/conflicts"))
+            .expect("conflicts dir must exist")
+            .map(|e| e.expect("entry").path())
+            .collect();
+        assert_eq!(stashes.len(), 1, "the server version must be stashed");
+        assert_eq!(
+            fs::read_to_string(&stashes[0]).expect("read stash"),
+            "the server version"
+        );
+
+        let mut db = StateDb::open(&db_path).expect("open db");
+        db.commit_batch(&std::mem::take(&mut result.results))
+            .expect("commit");
+        assert_eq!(
+            db.get_row("page.md").expect("get").expect("exists").status,
+            SyncStatus::Conflict,
+            "a conflict row is what `sb sync resolve` already knows how to fix"
+        );
+    }
+
+    #[tokio::test]
+    async fn pull_downloads_over_a_readonly_row_once_the_refused_edit_is_gone() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        let file = dir.path().join("page.md");
+
+        // The user reverted the file to the last content both sides agreed on,
+        // so there is nothing left to lose and the refusal is moot.
+        fs::write(&file, b"agreed content").expect("write");
+        let agreed = hash_file(&file).expect("hash");
+        fs::write(&file, b"my refused edit").expect("write");
+        seed_readonly(
+            dir.path(),
+            &db_path,
+            "page.md",
+            Some((&agreed, 1700000000000)),
+        );
+        fs::write(&file, b"agreed content").expect("revert");
+
+        let server = MockServer::start().await;
+        mock_listing(
+            &server,
+            serde_json::json!([make_file_meta("page.md", 1700000001000i64)]),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs/page.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("the server version"))
+            .mount(&server)
+            .await;
+
+        let mut result = pull_one(dir.path(), &db_path, &server).await;
+        assert_eq!(result.downloaded, 1);
+        assert_eq!(result.conflicts, 0);
+        assert_eq!(
+            fs::read_to_string(&file).expect("read"),
+            "the server version",
+            "a read-only path must still receive server updates"
+        );
+
+        let mut db = StateDb::open(&db_path).expect("open db");
+        db.commit_batch(&std::mem::take(&mut result.results))
+            .expect("commit");
+        assert_eq!(
+            db.get_row("page.md").expect("get").expect("exists").status,
+            SyncStatus::Synced,
+            "the row must leave 'readonly', or the file never updates again"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_pull_never_plans_to_delete_a_refused_file() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        let file = dir.path().join("Library/Std/Config.md");
+        fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        fs::write(&file, b"my refused edit").expect("write");
+        seed_readonly(dir.path(), &db_path, "Library/Std/Config.md", None);
+
+        let server = MockServer::start().await;
+        mock_listing(&server, serde_json::json!([])).await;
+
+        let actions = plan_pull(
+            &make_client(&server.uri()),
+            dir.path(),
+            &dir.path().join(".sb"),
+            &db_path,
+            &make_filter(),
+        )
+        .await
+        .expect("plan_pull");
+
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                crate::sync::SyncAction::DeleteLocal { path, .. }
+                    if path == "Library/Std/Config.md"
+            )),
+            "dry-run must not plan a deletion pull no longer does: {actions:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn plan_pull_says_nothing_about_an_unchanged_readonly_row() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        let file = dir.path().join("page.md");
+        fs::write(&file, b"my refused edit").expect("write");
+        seed_readonly(
+            dir.path(),
+            &db_path,
+            "page.md",
+            Some(("agreed_hash", 1700000000000)),
+        );
+
+        let server = MockServer::start().await;
+        mock_listing(
+            &server,
+            serde_json::json!([make_file_meta("page.md", 1700000000000i64)]),
+        )
+        .await;
+
+        let actions = plan_pull(
+            &make_client(&server.uri()),
+            dir.path(),
+            &dir.path().join(".sb"),
+            &db_path,
+            &make_filter(),
+        )
+        .await
+        .expect("plan_pull");
+
+        assert!(
+            actions.is_empty(),
+            "nothing changed, so a read-only row is not news: {actions:?}"
+        );
+    }
+
+    // ------------------------------------------------------------------
+    // plan_for_changed_remote: which baseline a row is compared against
+    // ------------------------------------------------------------------
+
+    fn row_with(status: SyncStatus, local: Option<&str>, remote: Option<&str>) -> SyncStateRow {
+        SyncStateRow {
+            path: "page.md".into(),
+            local_hash: local.map(str::to_string),
+            remote_hash: remote.map(str::to_string),
+            remote_etag: None,
+            remote_mtime: 1700000000000,
+            local_mtime: 0,
+            status,
+            conflict_at: 0,
+        }
+    }
+
+    #[test]
+    fn a_missing_local_file_is_always_downloaded() {
+        let row = row_with(SyncStatus::ReadOnly, Some("refused"), Some("agreed"));
+        assert_eq!(plan_for_changed_remote("", &row), PullPlan::Download);
+    }
+
+    #[test]
+    fn an_untouched_local_file_is_downloaded_over() {
+        let row = row_with(SyncStatus::Synced, Some("local"), Some("local"));
+        assert_eq!(plan_for_changed_remote("local", &row), PullPlan::Download);
+    }
+
+    #[test]
+    fn a_locally_edited_file_conflicts_instead_of_being_overwritten() {
+        let row = row_with(SyncStatus::Synced, Some("local"), Some("local"));
+        assert_eq!(plan_for_changed_remote("edited", &row), PullPlan::Conflict);
+    }
+
+    #[test]
+    fn a_row_with_no_recorded_local_hash_is_downloaded_over() {
+        let row = row_with(SyncStatus::Synced, None, Some("remote"));
+        assert_eq!(
+            plan_for_changed_remote("whatever", &row),
+            PullPlan::Download
+        );
+    }
+
+    #[test]
+    fn a_readonly_row_is_measured_against_the_last_agreed_content() {
+        // local_hash here is the REFUSED edit, not a baseline: comparing against
+        // it is what used to download over the user's work.
+        let row = row_with(SyncStatus::ReadOnly, Some("refused"), Some("agreed"));
+        assert_eq!(plan_for_changed_remote("refused", &row), PullPlan::Conflict);
+        assert_eq!(plan_for_changed_remote("agreed", &row), PullPlan::Download);
+    }
+
+    #[test]
+    fn a_readonly_row_the_server_never_held_conflicts_rather_than_clobbers() {
+        // No remote_hash: nothing was ever agreed, so any local content is the
+        // user's own and a server file appearing at that path is a conflict.
+        let row = row_with(SyncStatus::ReadOnly, Some("refused"), None);
+        assert_eq!(plan_for_changed_remote("refused", &row), PullPlan::Conflict);
     }
 }

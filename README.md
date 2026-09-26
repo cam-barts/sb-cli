@@ -253,23 +253,29 @@ when it's installed, otherwise a numbered prompt.
 | `sb page create <name>` | Create a page (`--content`, `--edit`, `--template`) |
 | `sb page edit [name]` | Edit a page in `$EDITOR`. Omit `name` to pick with fzf |
 | `sb page delete [name]` | Delete a page (`--force` to skip confirmation). Omit `name` to pick with fzf |
-| `sb page append <name>` | Append content to a page (`--content`) |
+| `sb page append <name>` | Append content to a page (`--content`, `--sign @name` to credit an author) |
+| `sb page history [name]` | List a page's revision history (`--limit`, `--before HASH`) |
+| `sb page diff [name]` | Unified diff of a revision, or of uncommitted changes when `--rev` is omitted |
+| `sb page restore [name] --rev HASH` | Restore a page to an earlier revision (writes locally, then syncs) |
 | `sb page move <from> <to>` | Rename or move a page |
 | `sb template list` | List pages tagged `meta/template/page` (index-backed when the Runtime API is on, else a local frontmatter scan) |
 | `sb template new [name]` | Create a page from a template and open it in `$EDITOR` (use `--no-edit` to skip). `--template <name>` skips the picker; omitting it opens an fzf picker when `fzf` is installed, otherwise a numbered prompt. Omitting `name` uses the template's `suggestedName`/`confirmName` |
 | `sb completions <shell>` | Print a shell completion script (bash, zsh, fish, elvish, powershell); `--install` writes it to the standard location |
-| `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`, `--task`, `--task-tag`, `--no-task-tag`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
+| `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`, `--task`, `--task-tag`, `--no-task-tag`, `--sign @name`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
 | `sb sync` | Bidirectional sync: pull then push (`--dry-run`) |
 | `sb sync pull` | Pull changes from server (`--dry-run`) |
 | `sb sync push` | Push local changes to server (`--dry-run`) |
 | `sb sync status` | Show sync status (modified, new, deleted, conflicts) |
 | `sb sync conflicts` | List files in conflict |
-| `sb sync resolve <path>` | Resolve a conflict (`--keep-local`, `--keep-remote`, `--diff`) |
-| `sb lua <expr>` | Evaluate a Space Lua expression via the Runtime API |
-| `sb query <query>` | Run an index query via the Runtime API |
-| `sb logs` | Stream client + server logs from the Runtime API (`--follow`, `--source client\|server\|both`) |
+| `sb sync resolve [path]` | Resolve conflicts. Omit `path` to multi-select from the conflict list (Tab in fzf, `1,3-5` or `a` in the fallback) and walk the selection. `--all` walks every conflict; `--keep-local`, `--keep-remote`, `--diff`, `--force`. Resolving consumes every stash for the path, not just the newest |
+| `sb sync prune-stashes [path]` | Delete conflict stashes under `.sb/conflicts/` that carry no information: ones byte-identical to the live local file, and duplicates of a newer stash. `--dry-run` lists them; `--all` also clears paths no longer in conflict |
+| `sb lua <expr>` | Evaluate a Space Lua **expression** via the Runtime API. Statements need `--script FILE` (or `-` for stdin) |
+| `sb query <query>` | Run an index query via the Runtime API. `sb query --help` carries worked examples: bare-attribute existence filters, `select` (which projects AND de-duplicates), `==` vs `=` |
+| `sb logs` | Stream client + server logs from the Runtime API (`--follow`, `-n N`, `--source client\|server\|both`) |
 | `sb screenshot` | Save a PNG of the headless browser's current state (`--output PATH\|-`) |
-| `sb describe <tag>` | Sample objects of a tag and report observed fields and types (`--limit N`) |
+| `sb describe [tag]` | With a tag: sample its objects and report observed fields and types (`--limit N`). With no tag: list every tag in the index with its object count, since `index.tag "NAME"` is the only query source and nothing else tells you which names exist |
+| `sb links [page]` | Wiki links from the relation index: backlinks by default, `--from` for outgoing |
+| `sb inbox` | Open `@mention`s addressed to you. `--to @name`, or set `identity` in config / `SB_IDENTITY` |
 | `sb shell <cmd>` | Execute a command on the server (opt-in, disabled by default) |
 | `sb auth set` | Set auth token (`--token` or interactive prompt) |
 | `sb config show` | Display resolved configuration (`--reveal` to unmask tokens) |
@@ -282,6 +288,7 @@ when it's installed, otherwise a numbered prompt.
 | Flag | Description |
 |------|-------------|
 | `--quiet` | Suppress all informational output |
+| `--timeout <SECONDS>` | Request timeout. Raises the local HTTP timeout and the Runtime API's `X-Timeout` together (both default to 30) |
 | `--verbose` | Enable debug logging to stderr |
 | `--no-color` | Disable colored output |
 | `--format <human\|json>` | Output format. Defaults to `human` when stdout is a TTY and `json` when piped, so `sb page list \| jq ...` works without an explicit flag. |

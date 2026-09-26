@@ -410,6 +410,7 @@ pub struct DailyArgs<'a> {
     pub task_tag: Option<&'a str>,
     pub no_task_tag: bool,
     pub append: Option<&'a str>,
+    pub sign: &'a [String],
     pub limit: Option<usize>,
     pub from: Option<&'a str>,
     pub to: Option<&'a str>,
@@ -573,6 +574,10 @@ async fn execute_write_or_editor(
         is_task,
         task_tag.as_deref(),
     );
+    // A daily entry is always a list item, so this lands the signature
+    // inline at the end of the bullet rather than on a new (unindented)
+    // line below it. See `page::append_signature` for the full rationale.
+    let entry_md = crate::commands::page::append_signature(&entry_md, args.sign);
 
     append_entry(&page_path, &entry_md)?;
     output::print_success(
@@ -1515,6 +1520,7 @@ dateFormat = "%Y-%m-%d"
             task_tag: None,
             no_task_tag: false,
             append: None,
+            sign: &[],
             limit: None,
             from: None,
             to: None,
@@ -1675,6 +1681,30 @@ dateFormat = "%Y-%m-%d"
             std::fs::read_to_string(tmp.path().join("Journal").join(format!("{}.md", today)))
                 .unwrap();
         assert_eq!(written, "* [time:: 14:32] Finished the spike\n");
+    }
+
+    #[tokio::test]
+    async fn execute_write_with_sign_appends_signature_inline_on_the_bullet() {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = minimal_config(tmp.path());
+        let fmt = OutputFormat::Human;
+        let mut args = default_args(&fmt);
+        args.entry = vec!["Finished".into(), "the".into(), "spike".into()];
+        args.no_time = true;
+        let signers = vec!["ada".to_string(), "zef".to_string()];
+        args.sign = &signers;
+
+        super::execute_write_or_editor(tmp.path(), &config, &args, false)
+            .await
+            .unwrap();
+
+        let today = jiff::Zoned::now().date().strftime("%Y-%m-%d").to_string();
+        let written =
+            std::fs::read_to_string(tmp.path().join("Journal").join(format!("{}.md", today)))
+                .unwrap();
+        // Same bullet, not a new line: the entry is a list item, so the
+        // signature terminates it inline.
+        assert_eq!(written, "* Finished the spike -- @ada @zef\n");
     }
 
     #[tokio::test]

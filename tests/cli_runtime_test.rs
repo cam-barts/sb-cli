@@ -62,7 +62,10 @@ async fn lua_eval_reports_lua_error() {
         .current_dir(dir.path())
         .assert()
         .failure()
-        .code(1);
+        // Exit 2, not 1: the Lua threw, so the input was wrong. A server fault
+        // the caller cannot act on would be 1.
+        .code(2)
+        .stderr(predicate::str::contains("attempt to index nil"));
 }
 
 #[tokio::test]

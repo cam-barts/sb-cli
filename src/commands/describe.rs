@@ -14,9 +14,14 @@ use std::collections::BTreeMap;
 /// with their inferred Lua types. The result is a best-effort introspection
 /// rather than a contract, and the inferred types are biased toward what
 /// the running space currently contains.
+///
+/// With no tag it lists every tag in the index instead. Knowing that
+/// `index.tag "NAME"` is the only query source does not tell you which names
+/// exist, so the two modes together are the discoverability path for `sb query`:
+/// `sb describe` for the sources, `sb describe TAG` for the filterable fields.
 pub async fn execute(
     cli_token: Option<&str>,
-    tag: &str,
+    tag: Option<&str>,
     limit: usize,
     fields: &[String],
     format: &OutputFormat,
@@ -29,42 +34,26 @@ pub async fn execute(
         return Err(runtime_unavailable_error());
     }
 
+    // No tag: the caller does not yet know what is queryable, so list the tags
+    // themselves. `sb describe` -> what exists; `sb describe TAG` -> what it has.
+    let Some(tag) = tag else {
+        let client = build_client(cli_token)?;
+        let result =
+            crate::runtime::eval(&client, "/.runtime/lua_script", LIST_TAGS_SCRIPT).await?;
+        render_tag_list(
+            &TagList::from_lua_result(&result),
+            fields,
+            format,
+            color,
+            quiet,
+        );
+        return Ok(());
+    };
+
     let safe_tag = sanitize_tag(tag)?;
     let client = build_client(cli_token)?;
     let lua_script = build_describe_script(&safe_tag, limit);
-    let resp = client
-        .post_text("/.runtime/lua_script", &lua_script)
-        .await?;
-    let status = resp.status();
-    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-        return Err(runtime_unavailable_error());
-    }
-
-    let body = resp.text().await.map_err(|e| SbError::HttpStatus {
-        status: status.as_u16(),
-        url: format!("{}/.runtime/lua_script", client.base_url()),
-        body: format!("failed to read response: {e}"),
-    })?;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| SbError::HttpStatus {
-            status: status.as_u16(),
-            url: format!("{}/.runtime/lua_script", client.base_url()),
-            body: format!("invalid JSON response: {e}"),
-        })?;
-
-    if let Some(error) = parsed.get("error").and_then(|e| e.as_str()) {
-        return Err(SbError::HttpStatus {
-            status: status.as_u16(),
-            url: format!("{}/.runtime/lua_script", client.base_url()),
-            body: format!("Lua error: {error}"),
-        });
-    }
-
-    let result = parsed
-        .get("result")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+    let result = crate::runtime::eval(&client, "/.runtime/lua_script", &lua_script).await?;
 
     let summary = TagSummary::from_lua_result(&safe_tag, &result);
 
@@ -88,6 +77,149 @@ for _, obj in ipairs(rows) do
 end
 return {{ tag = "{tag}", sampled = #rows, fields = fields }}"#,
     )
+}
+
+/// Probe for `sb describe` with no tag: tally every object in the `tag` index
+/// by tag name, recording how many objects carry it and which object types it
+/// is attached to. Returns `[{name, count, parents}]` sorted by count.
+///
+/// Two SilverBullet sharp edges are load-bearing here. Leaf values coming back
+/// over the runtime bridge are wrapped, so they must be `tostring`-ed before
+/// they can be used as table keys. And `select` de-duplicates its projection,
+/// so the counts have to be tallied from full rows, not from `select name`.
+pub(crate) const LIST_TAGS_SCRIPT: &str = r#"local tally = {}
+for _, r in ipairs(query[[from index.tag "tag"]]) do
+  local name = tostring(r.name)
+  local t = tally[name]
+  if not t then t = { count = 0, parents = {} }; tally[name] = t end
+  t.count = t.count + 1
+  t.parents[tostring(r.parent)] = true
+end
+local out = {}
+for name, t in pairs(tally) do
+  local parents = {}
+  for p in pairs(t.parents) do parents[#parents + 1] = p end
+  table.sort(parents)
+  out[#out + 1] = { name = name, count = t.count, parents = table.concat(parents, ", ") }
+end
+table.sort(out, function(a, b)
+  if a.count == b.count then return a.name < b.name end
+  return a.count > b.count
+end)
+return out"#;
+
+/// One row of `sb describe` with no tag.
+#[derive(Debug, Clone)]
+pub(crate) struct TagList(pub Vec<(String, u64, String)>);
+
+impl TagList {
+    pub(crate) fn from_lua_result(value: &serde_json::Value) -> Self {
+        let rows = value
+            .as_array()
+            .map(|rows| {
+                rows.iter()
+                    .map(|r| {
+                        (
+                            r.get("name")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                            r.get("count").and_then(|v| v.as_u64()).unwrap_or(0),
+                            r.get("parents")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default()
+                                .to_string(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self(rows)
+    }
+}
+
+/// Widest the tag column gets in the human table. JSON output is never elided.
+const TAG_NAME_COLUMN_MAX: usize = 48;
+
+/// Shorten `s` to `width` characters (not bytes — tag names are arbitrary text),
+/// marking the cut with a trailing `…`.
+fn elide(s: &str, width: usize) -> String {
+    if s.chars().count() <= width {
+        return s.to_string();
+    }
+    s.chars().take(width.saturating_sub(1)).collect::<String>() + "…"
+}
+
+fn render_tag_list(
+    list: &TagList,
+    fields: &[String],
+    format: &OutputFormat,
+    color: bool,
+    quiet: bool,
+) {
+    match format {
+        OutputFormat::Json => {
+            let payload: Vec<serde_json::Value> = list
+                .0
+                .iter()
+                .map(|(name, count, parents)| {
+                    serde_json::json!({ "name": name, "count": count, "parents": parents })
+                })
+                .collect();
+            let payload =
+                crate::output::filter_json_fields(&serde_json::Value::Array(payload), fields);
+            println!("{}", serde_json::to_string_pretty(&payload).unwrap());
+        }
+        OutputFormat::Human => {
+            if list.0.is_empty() {
+                if !quiet {
+                    eprintln!("No tags found in the index.");
+                }
+                return;
+            }
+            let dim = if color {
+                Style::new().dim()
+            } else {
+                Style::new()
+            };
+            // Spaces accumulate junk tags (a stray `#` on a long line becomes a
+            // 200-character "tag"), and one of those would push every other
+            // column off the terminal. Cap the column and elide over-long names.
+            let name_w = list
+                .0
+                .iter()
+                .map(|(n, _, _)| n.chars().count())
+                .max()
+                .unwrap_or(0)
+                .clamp("tag".len(), TAG_NAME_COLUMN_MAX);
+            let count_w = list
+                .0
+                .iter()
+                .map(|(_, c, _)| c.to_string().len())
+                .max()
+                .unwrap_or(0)
+                .max("objects".len());
+            println!("{:<name_w$}  {:>count_w$}  attached to", "tag", "objects");
+            println!(
+                "{}  {}  -----------",
+                "-".repeat(name_w),
+                "-".repeat(count_w)
+            );
+            for (name, count, parents) in &list.0 {
+                let name = elide(name, name_w);
+                println!("{name:<name_w$}  {count:>count_w$}  {parents}");
+            }
+            if !quiet {
+                eprintln!(
+                    "{}",
+                    dim.apply_to(format!(
+                        "{} tags. `sb describe TAG` shows the attributes objects of that tag carry.",
+                        list.0.len()
+                    ))
+                );
+            }
+        }
+    }
 }
 
 /// Reject tag names containing characters that could escape the embedded Lua
@@ -273,6 +405,47 @@ mod tests {
     }
 
     #[test]
+    fn tag_list_parses_rows_and_keeps_probe_order() {
+        let value = serde_json::json!([
+            { "name": "zotero", "count": 606, "parents": "page" },
+            { "name": "highlight", "count": 431, "parents": "data" },
+            // A row the probe could not fully resolve must not panic or vanish.
+            { "name": "odd" },
+        ]);
+        let list = TagList::from_lua_result(&value);
+        assert_eq!(list.0.len(), 3);
+        assert_eq!(list.0[0], ("zotero".into(), 606, "page".into()));
+        assert_eq!(list.0[2], ("odd".into(), 0, String::new()));
+    }
+
+    #[test]
+    fn elide_only_cuts_what_is_too_long_and_counts_chars() {
+        assert_eq!(elide("task", 10), "task");
+        assert_eq!(elide("abcdefghij", 10), "abcdefghij");
+        assert_eq!(elide("abcdefghijk", 10), "abcdefghi…");
+        // A multi-byte name must be cut on a char boundary, not mid-codepoint.
+        assert_eq!(elide("émigré-café", 5), "émig…");
+        assert_eq!(elide("émigré-café", 5).chars().count(), 5);
+    }
+
+    #[test]
+    fn tag_list_tolerates_a_non_array_result() {
+        assert!(TagList::from_lua_result(&serde_json::json!(null))
+            .0
+            .is_empty());
+    }
+
+    /// The probe has to tally from full rows: `select` de-duplicates, which
+    /// would turn every count into 1.
+    #[test]
+    fn list_tags_script_does_not_project_with_select() {
+        assert!(LIST_TAGS_SCRIPT.contains(r#"from index.tag "tag""#));
+        assert!(!LIST_TAGS_SCRIPT.contains("select"));
+        // Bridge leaf values are wrapped; unconverted they cannot be table keys.
+        assert!(LIST_TAGS_SCRIPT.contains("tostring(r.name)"));
+    }
+
+    #[test]
     fn build_describe_script_contains_tag_and_limit() {
         let script = build_describe_script("task", 25);
         assert!(script.contains(r#"tag "task""#));
@@ -353,9 +526,17 @@ mod tests {
             let tmp = make_space(Some("http://127.0.0.1:1"));
             enable_runtime(tmp.path());
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute(None, "bad tag", 10, &[], &OutputFormat::Json, true, false)
-                .await
-                .unwrap_err();
+            let err = execute(
+                None,
+                Some("bad tag"),
+                10,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
             assert!(matches!(err, SbError::Usage(_)));
         }
 
@@ -363,9 +544,17 @@ mod tests {
         async fn execute_errors_when_runtime_disabled() {
             let tmp = make_space(Some("http://127.0.0.1:1"));
             let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute(None, "task", 10, &[], &OutputFormat::Json, true, false)
-                .await
-                .unwrap_err();
+            let err = execute(
+                None,
+                Some("task"),
+                10,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .unwrap_err();
             assert!(format!("{err}").contains("Runtime API not available"));
         }
 
@@ -382,9 +571,17 @@ mod tests {
             let tmp = make_space(Some(&server.uri()));
             enable_runtime(tmp.path());
             let _g = SbSpaceGuard::set(tmp.path());
-            execute(None, "task", 100, &[], &OutputFormat::Json, true, false)
-                .await
-                .expect("succeed");
+            execute(
+                None,
+                Some("task"),
+                100,
+                &[],
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("succeed");
         }
 
         #[tokio::test]
@@ -404,7 +601,7 @@ mod tests {
             // Should succeed (early-return path), not error.
             execute(
                 None,
-                "missing",
+                Some("missing"),
                 100,
                 &[],
                 &OutputFormat::Human,

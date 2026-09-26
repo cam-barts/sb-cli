@@ -8,6 +8,11 @@ use tracing::debug;
 pub struct ConfigFile {
     pub server_url: Option<String>,
     pub token: Option<String>,
+    /// `@name` identity used as the default recipient for `sb inbox` and, in
+    /// future, the default signer for `--sign`. Deliberately never queried
+    /// from the server: `identity.own()` returns `null` on servers without
+    /// accounts, which is the deployment this CLI targets.
+    pub identity: Option<String>,
     #[serde(default)]
     pub sync: SyncConfigFile,
     #[serde(default)]
@@ -104,6 +109,7 @@ impl<T> ResolvedValue<T> {
 pub struct ResolvedConfig {
     pub server_url: ResolvedValue<Option<String>>,
     pub token: ResolvedValue<Option<String>>,
+    pub identity: ResolvedValue<Option<String>>,
     pub sync_dir: ResolvedValue<String>,
     pub sync_workers: ResolvedValue<u32>,
     pub sync_attachments: ResolvedValue<bool>,
@@ -215,6 +221,11 @@ impl ResolvedConfig {
             user_config.server_url,
         );
         let token = Self::resolve_optional_string("SB_TOKEN", config_file.token, user_config.token);
+        let identity = Self::resolve_optional_string(
+            "SB_IDENTITY",
+            config_file.identity,
+            user_config.identity,
+        );
 
         let sync_dir = Self::resolve_string(
             "SB_SYNC_DIR",
@@ -330,6 +341,7 @@ impl ResolvedConfig {
         Ok(ResolvedConfig {
             server_url,
             token,
+            identity,
             sync_dir,
             sync_workers,
             sync_attachments,
@@ -604,6 +616,7 @@ pub struct UserConfig {
     pub space: Option<String>,
     pub server_url: Option<String>,
     pub token: Option<String>,
+    pub identity: Option<String>,
     #[serde(default)]
     pub sync: SyncConfigFile,
     #[serde(default)]
@@ -698,10 +711,15 @@ pub fn write_config_file(sb_dir: &std::path::Path, url: &str, token: Option<&str
 mod tests {
     use super::*;
     use std::io::Write;
-    use std::sync::Mutex;
 
     /// Mutex to serialize tests that modify process-global env vars.
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    ///
+    /// This is deliberately the SAME lock `test_util`'s guards take. Env vars
+    /// are process-global, so a second, independent mutex protecting the same
+    /// variables serializes nothing: a `config` test could clear `HOME` while a
+    /// `sync` test holding only `SB_SPACE_MUTEX` was reading it. That raced,
+    /// and it failed roughly one run in two once the suite grew past ~590 tests.
+    static ENV_MUTEX: &std::sync::Mutex<()> = &crate::test_util::SB_SPACE_MUTEX;
 
     /// Holds the env mutex AND points `XDG_CONFIG_HOME` at a guaranteed-empty
     /// temp dir for the duration of the test. Restores both on drop.
@@ -713,6 +731,7 @@ mod tests {
         _lock: std::sync::MutexGuard<'static, ()>,
         _xdg_tmp: tempfile::TempDir,
         prev_xdg: Option<String>,
+        prev_home: Option<String>,
     }
 
     impl EnvTestGuard {
@@ -722,12 +741,17 @@ mod tests {
                 Err(p) => p.into_inner(),
             };
             let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
+            // `HOME` is captured even though this guard does not set it: the
+            // tilde-expansion tests below overwrite it, and restoring is the
+            // only way a later test still sees the real one.
+            let prev_home = std::env::var("HOME").ok();
             let xdg_tmp = tempfile::tempdir().expect("create xdg isolate dir");
             std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path());
             EnvTestGuard {
                 _lock: lock,
                 _xdg_tmp: xdg_tmp,
                 prev_xdg,
+                prev_home,
             }
         }
     }
@@ -737,6 +761,10 @@ mod tests {
             match &self.prev_xdg {
                 Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+            match &self.prev_home {
+                Some(v) => std::env::set_var("HOME", v),
+                None => std::env::remove_var("HOME"),
             }
         }
     }
@@ -1518,7 +1546,8 @@ keychain = true
         let _g = EnvTestGuard::new();
         std::env::set_var("HOME", "/home/testuser");
         let result = expand_tilde("~").expect("expand ~");
-        std::env::remove_var("HOME");
+        // HOME is restored by EnvTestGuard::drop, not deleted here: removing it
+        // outright left every later test in the process without a HOME.
         assert_eq!(result, PathBuf::from("/home/testuser"));
     }
 
@@ -1527,7 +1556,8 @@ keychain = true
         let _g = EnvTestGuard::new();
         std::env::set_var("HOME", "/home/testuser");
         let result = expand_tilde("~/notes").expect("expand ~/notes");
-        std::env::remove_var("HOME");
+        // HOME is restored by EnvTestGuard::drop, not deleted here: removing it
+        // outright left every later test in the process without a HOME.
         assert_eq!(result, PathBuf::from("/home/testuser/notes"));
     }
 
@@ -1563,7 +1593,8 @@ keychain = true
         std::env::remove_var("XDG_CONFIG_HOME");
         std::env::set_var("HOME", "/home/testuser");
         let result = xdg_config_dir().expect("xdg_config_dir");
-        std::env::remove_var("HOME");
+        // HOME is restored by EnvTestGuard::drop, not deleted here: removing it
+        // outright left every later test in the process without a HOME.
         assert_eq!(result, PathBuf::from("/home/testuser/.config/sb"));
     }
 

@@ -2,7 +2,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::fs;
-use wiremock::matchers::{body_string_contains, method, path};
+use wiremock::matchers::{body_string_contains, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// Mirror of the helper in cli_runtime_test.rs -- creates a temp space with
@@ -130,6 +130,171 @@ async fn logs_503_maps_to_runtime_unavailable_message() {
         .stderr(predicate::str::contains(
             "https://silverbullet.md/Runtime%20API",
         ));
+}
+
+#[tokio::test]
+async fn logs_lines_flag_maps_to_limit_query_param() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.runtime/logs"))
+        .and(query_param("limit", "5"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"clientLogs":[],"serverLogs":[]}"#),
+        )
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "logs", "-n", "5"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+#[tokio::test]
+async fn logs_first_poll_sends_no_since_query_param() {
+    let server = MockServer::start().await;
+    // Constraining the mock on the missing param IS the assertion: a request
+    // carrying `since` would 404 against this mock and fail the test.
+    Mock::given(method("GET"))
+        .and(path("/.runtime/logs"))
+        .and(query_param_is_missing("since"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"clientLogs":[],"serverLogs":[]}"#),
+        )
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "logs"])
+        .current_dir(dir.path())
+        .assert()
+        .success();
+}
+
+// ---------------- sb lua --script ----------------
+
+#[tokio::test]
+async fn lua_script_multi_statement_posts_to_lua_script_endpoint() {
+    let server = MockServer::start().await;
+    // Only /.runtime/lua_script is mocked -- a request to /.runtime/lua would 404.
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua_script"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": 3}"#))
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+    let script_path = dir.path().join("script.lua");
+    fs::write(&script_path, "local x = 1\nlocal y = 2\nreturn x + y").unwrap();
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args([
+            "--format",
+            "human",
+            "lua",
+            "--script",
+            script_path.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("3"));
+}
+
+#[tokio::test]
+async fn lua_script_dash_reads_from_stdin() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua_script"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": "hi"}"#))
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "lua", "--script", "-"])
+        .current_dir(dir.path())
+        .write_stdin("return 'hi'")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("hi"));
+}
+
+#[tokio::test]
+async fn lua_script_and_expression_together_exits_usage_error() {
+    // clap's own conflicts_with rejects this before any command code runs --
+    // no server needed at all.
+    let dir = setup_space("http://localhost:19999", true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["lua", "--script", "somefile.lua", "1 + 1"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(2);
+}
+
+#[tokio::test]
+async fn lua_script_missing_file_is_filesystem_error_with_no_http_request() {
+    let server = MockServer::start().await;
+    // Any POST at all means the file read didn't happen first -- fail loudly.
+    Mock::given(method("POST"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": 1}"#))
+        .expect(0)
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+    let missing_path = dir.path().join("does-not-exist.lua");
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["lua", "--script", missing_path.to_str().unwrap()])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            missing_path.to_str().unwrap().to_string(),
+        ));
+}
+
+#[tokio::test]
+async fn lua_script_throws_surfaces_lua_message_not_raw_500() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua_script"))
+        .respond_with(
+            ResponseTemplate::new(500).set_body_string(
+                r#"{"error":"attempt to call a nil value","code":"script_error"}"#,
+            ),
+        )
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+    let script_path = dir.path().join("bad.lua");
+    fs::write(&script_path, "nope()\nreturn 1").unwrap();
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["lua", "--script", script_path.to_str().unwrap()])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(2)
+        .stderr(predicate::str::contains("attempt to call a nil value"));
 }
 
 // ---------------- sb screenshot ----------------

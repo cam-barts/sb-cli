@@ -191,11 +191,18 @@ Every config field has an `SB_`-prefixed variable.\n\n\
 - `sb query` runs SilverBullet index queries (SLIQ) over indexed objects. Common \
 tags: `page`, `task`, `tag`, `link`, plus any custom fenced data-object tag.\n\
   - `sb query 'from index.tag \"page\" order by name limit 20'`\n\
-  - `sb query 'from index.tag \"task\" where done = false limit 50'`\n\
-- `sb describe <tag>` samples objects of a tag and reports their observed fields \
-— use it to learn a tag's shape before querying.\n\
-- `sb lua` evaluates a Space Lua expression via the Runtime API, e.g. \
-`sb lua 'return 1 + 1'`.\n\
+  - `sb query 'from index.tag \"task\" where done == false limit 50'` \
+(comparison is `==`; a single `=` is a syntax error)\n\
+  - `sb query 'from index.tag \"page\" where zoteroKey select name, zoteroKey'` \
+— a bare attribute name is an existence filter, and `select` projects fields \
+AND returns distinct rows, so one query yields a whole lookup table.\n\
+  - `sb query --help` has the full worked example set.\n\
+- `sb describe` with no argument lists every tag in the index with its object \
+count; `sb describe <tag>` samples objects of that tag and reports their observed \
+fields — that pair is how you learn what you can filter and select on.\n\
+- `sb lua` evaluates a Space Lua *expression* via the Runtime API, e.g. \
+`sb lua '1 + 1'`. A top-level `return` is a syntax error there; use \
+`sb lua --script FILE` for anything with statements.\n\
 - `query`/`lua`/`describe` (and template rendering) require SilverBullet's Runtime \
 API, which is OFF by default. Enable it with `[runtime] available = true` in \
 `.sb/config.toml` (or `SB_RUNTIME_AVAILABLE=1`); the server must be running with a \

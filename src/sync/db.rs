@@ -38,7 +38,8 @@ impl StateDb {
                 remote_mtime INTEGER NOT NULL DEFAULT 0,
                 local_mtime INTEGER NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'synced',
-                conflict_at INTEGER NOT NULL DEFAULT 0
+                conflict_at INTEGER NOT NULL DEFAULT 0,
+                remote_etag TEXT
             );
             CREATE TABLE IF NOT EXISTS sync_meta (
                 key TEXT PRIMARY KEY NOT NULL,
@@ -76,6 +77,31 @@ impl StateDb {
             })?;
         }
 
+        // Migration: add remote_etag column on existing databases. Nullable with
+        // no default — NULL means "server never gave us an ETag", which is how
+        // every database written before conditional writes existed reads, and
+        // makes push fall back to unconditional PUTs exactly as it did then.
+        let has_remote_etag: bool = conn
+            .prepare("PRAGMA table_info(sync_state)")
+            .map_err(|e| SbError::Database {
+                message: format!("failed to check sync_state schema: {e}"),
+                source: Some(e),
+            })?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| SbError::Database {
+                message: format!("failed to read table_info: {e}"),
+                source: Some(e),
+            })?
+            .any(|col| col.is_ok_and(|name| name == "remote_etag"));
+
+        if !has_remote_etag {
+            conn.execute_batch("ALTER TABLE sync_state ADD COLUMN remote_etag TEXT;")
+                .map_err(|e| SbError::Database {
+                    message: format!("failed to add remote_etag column: {e}"),
+                    source: Some(e),
+                })?;
+        }
+
         Ok(StateDb { conn })
     }
 
@@ -86,8 +112,9 @@ impl StateDb {
         self.conn
             .execute(
                 "INSERT OR REPLACE INTO sync_state
-                 (path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                 (path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at,
+                  remote_etag)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     row.path,
                     row.local_hash,
@@ -96,6 +123,7 @@ impl StateDb {
                     row.local_mtime,
                     row.status.as_str(),
                     row.conflict_at,
+                    row.remote_etag,
                 ],
             )
             .map_err(|e| SbError::Database {
@@ -110,7 +138,8 @@ impl StateDb {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "SELECT path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at
+                "SELECT path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at,
+                 remote_etag
                  FROM sync_state WHERE path = ?1",
             )
             .map_err(|e| SbError::Database {
@@ -139,7 +168,8 @@ impl StateDb {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "SELECT path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at
+                "SELECT path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at,
+                 remote_etag
                  FROM sync_state",
             )
             .map_err(|e| SbError::Database {
@@ -168,7 +198,8 @@ impl StateDb {
         let mut stmt = self
             .conn
             .prepare_cached(
-                "SELECT path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at
+                "SELECT path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at,
+                 remote_etag
                  FROM sync_state WHERE status = ?1",
             )
             .map_err(|e| SbError::Database {
@@ -219,14 +250,23 @@ impl StateDb {
                     path,
                     local_hash,
                     remote_hash,
+                    remote_etag,
                     remote_mtime,
                     local_mtime,
                 } => {
                     tx.execute(
                         "INSERT OR REPLACE INTO sync_state
-                         (path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at)
-                         VALUES (?1, ?2, ?3, ?4, ?5, 'synced', 0)",
-                        params![path, local_hash, remote_hash, remote_mtime, local_mtime],
+                         (path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at,
+                          remote_etag)
+                         VALUES (?1, ?2, ?3, ?4, ?5, 'synced', 0, ?6)",
+                        params![
+                            path,
+                            local_hash,
+                            remote_hash,
+                            remote_mtime,
+                            local_mtime,
+                            remote_etag
+                        ],
                     )
                     .map_err(|e| SbError::Database {
                         message: format!("failed to write synced row in batch: {e}"),
@@ -250,6 +290,25 @@ impl StateDb {
                             source: Some(e),
                         })?;
                 }
+                SyncResult::ReadOnly { path, local_hash } => {
+                    // Upsert, because the refused file may never have had a row
+                    // (a brand new local file the server rejects). On an existing
+                    // row only status and local_hash move: remote_mtime/hash/etag
+                    // still describe the server copy and push needs them intact.
+                    tx.execute(
+                        "INSERT INTO sync_state
+                         (path, local_hash, remote_hash, remote_mtime, local_mtime, status, conflict_at,
+                          remote_etag)
+                         VALUES (?1, ?2, NULL, 0, 0, 'readonly', 0, NULL)
+                         ON CONFLICT(path) DO UPDATE SET
+                           local_hash = ?2, status = 'readonly', conflict_at = 0",
+                        params![path, local_hash],
+                    )
+                    .map_err(|e| SbError::Database {
+                        message: format!("failed to write read-only row in batch: {e}"),
+                        source: Some(e),
+                    })?;
+                }
             }
         }
 
@@ -263,6 +322,10 @@ impl StateDb {
 
     /// Atomically resolve a conflict by setting status to synced with new hashes.
     ///
+    /// `remote_etag` is the ETag of the bytes now on the server, or `None` when
+    /// we do not know it -- never leave the pre-conflict ETag in place, or the
+    /// next push sends a stale `If-Match` and 412s forever.
+    ///
     /// Must be called from spawn_blocking. Filesystem stash cleanup is the caller's
     /// responsibility (cannot do async I/O inside spawn_blocking).
     pub fn mark_resolved(
@@ -270,6 +333,7 @@ impl StateDb {
         path: &str,
         local_hash: &str,
         remote_hash: &str,
+        remote_etag: Option<&str>,
         remote_mtime: i64,
         local_mtime: i64,
     ) -> SbResult<()> {
@@ -302,8 +366,16 @@ impl StateDb {
 
         tx.execute(
             "UPDATE sync_state SET local_hash = ?2, remote_hash = ?3, remote_mtime = ?4,
-             local_mtime = ?5, status = 'synced', conflict_at = 0 WHERE path = ?1",
-            params![path, local_hash, remote_hash, remote_mtime, local_mtime],
+             local_mtime = ?5, status = 'synced', conflict_at = 0, remote_etag = ?6
+             WHERE path = ?1",
+            params![
+                path,
+                local_hash,
+                remote_hash,
+                remote_mtime,
+                local_mtime,
+                remote_etag
+            ],
         )
         .map_err(|e| SbError::Database {
             message: format!("failed to update resolved row: {e}"),
@@ -365,6 +437,7 @@ fn row_mapper(row: &rusqlite::Row<'_>) -> rusqlite::Result<SyncStateRow> {
         path: row.get(0)?,
         local_hash: row.get(1)?,
         remote_hash: row.get(2)?,
+        remote_etag: row.get(7)?,
         remote_mtime: row.get(3)?,
         local_mtime: row.get(4)?,
         status: {
@@ -400,6 +473,7 @@ mod tests {
             path: path.to_string(),
             local_hash: Some("abc123".to_string()),
             remote_hash: Some("def456".to_string()),
+            remote_etag: None,
             remote_mtime: 1700000000000,
             local_mtime: 1700000001000,
             status: SyncStatus::Synced,
@@ -541,6 +615,7 @@ mod tests {
             path: "notes/page.md".to_string(),
             local_hash: "abc".to_string(),
             remote_hash: "def".to_string(),
+            remote_etag: None,
             remote_mtime: 1700000000000,
             local_mtime: 1700000001000,
         }];
@@ -606,6 +681,7 @@ mod tests {
                 path: "new.md".to_string(),
                 local_hash: "h1".to_string(),
                 remote_hash: "h2".to_string(),
+                remote_etag: None,
                 remote_mtime: 1700000000000,
                 local_mtime: 1700000001000,
             },
@@ -729,6 +805,7 @@ mod tests {
             "page.md",
             "newhash1",
             "newhash2",
+            Some("\"sha256:resolved\""),
             1700000060000,
             1700000061000,
         )
@@ -741,12 +818,17 @@ mod tests {
         assert_eq!(resolved.remote_mtime, 1700000060000);
         assert_eq!(resolved.local_mtime, 1700000061000);
         assert_eq!(resolved.conflict_at, 0);
+        assert_eq!(
+            resolved.remote_etag,
+            Some("\"sha256:resolved\"".to_string()),
+            "resolve should record the ETag of the copy now on the server"
+        );
     }
 
     #[test]
     fn mark_resolved_errors_on_nonexistent_path() {
         let (mut db, _tmp) = open_temp_db();
-        let result = db.mark_resolved("missing.md", "h1", "h2", 0, 0);
+        let result = db.mark_resolved("missing.md", "h1", "h2", None, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("not tracked"));
@@ -758,7 +840,7 @@ mod tests {
         let row = make_row("page.md"); // status = Synced
         db.upsert_row(&row).expect("upsert");
 
-        let result = db.mark_resolved("page.md", "h1", "h2", 0, 0);
+        let result = db.mark_resolved("page.md", "h1", "h2", None, 0, 0);
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("not 'conflict'"));
@@ -804,5 +886,184 @@ mod tests {
             row.conflict_at, 0,
             "migrated row should have conflict_at=0 default"
         );
+    }
+
+    // --- remote_etag column ---
+
+    #[test]
+    fn migrate_adds_remote_etag_to_existing_db_without_it() {
+        // A state.db written before conditional writes existed: no remote_etag.
+        let tmp = NamedTempFile::new().expect("create temp file");
+        {
+            let conn = rusqlite::Connection::open(tmp.path()).expect("open");
+            conn.execute_batch("PRAGMA journal_mode=WAL;").expect("wal");
+            conn.execute_batch(
+                "CREATE TABLE sync_state (
+                    path TEXT PRIMARY KEY NOT NULL,
+                    local_hash TEXT,
+                    remote_hash TEXT,
+                    remote_mtime INTEGER NOT NULL DEFAULT 0,
+                    local_mtime INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL DEFAULT 'synced',
+                    conflict_at INTEGER NOT NULL DEFAULT 0
+                );
+                CREATE TABLE sync_meta (
+                    key TEXT PRIMARY KEY NOT NULL,
+                    value TEXT NOT NULL
+                );",
+            )
+            .expect("create pre-etag schema");
+            conn.execute(
+                "INSERT INTO sync_state (path, local_hash, remote_hash, remote_mtime, local_mtime, status)
+                 VALUES ('test.md', 'blake3local', 'blake3remote', 1000, 2000, 'synced')",
+                [],
+            )
+            .expect("insert old row");
+        }
+
+        let db = StateDb::open(tmp.path()).expect("open should migrate successfully");
+
+        let cols: Vec<String> = {
+            let conn = rusqlite::Connection::open(tmp.path()).expect("reopen");
+            let mut stmt = conn
+                .prepare("PRAGMA table_info(sync_state)")
+                .expect("pragma");
+            let v = stmt
+                .query_map([], |r| r.get::<_, String>(1))
+                .expect("cols")
+                .map(|r| r.expect("col"))
+                .collect();
+            v
+        };
+        assert!(
+            cols.contains(&"remote_etag".to_string()),
+            "migration should add remote_etag, got {cols:?}"
+        );
+
+        let row = db.get_row("test.md").expect("get_row").expect("row exists");
+        assert_eq!(
+            row.remote_etag, None,
+            "a pre-existing row has no ETag, which means unconditional pushes"
+        );
+        assert_eq!(
+            row.remote_hash,
+            Some("blake3remote".to_string()),
+            "the blake3 remote_hash must be left exactly as it was"
+        );
+    }
+
+    #[test]
+    fn upsert_and_get_round_trip_the_etag() {
+        let (db, _tmp) = open_temp_db();
+        let mut row = make_row("page.md");
+        row.remote_etag = Some("\"sha256:cafe\"".to_string());
+        db.upsert_row(&row).expect("upsert");
+
+        let got = db.get_row("page.md").expect("get").expect("exists");
+        assert_eq!(got.remote_etag, Some("\"sha256:cafe\"".to_string()));
+        assert_eq!(
+            got.remote_hash,
+            Some("def456".to_string()),
+            "etag and blake3 remote_hash are separate columns"
+        );
+    }
+
+    #[test]
+    fn commit_batch_persists_the_etag_of_a_synced_result() {
+        let (mut db, _tmp) = open_temp_db();
+        db.commit_batch(&[SyncResult::Synced {
+            path: "page.md".to_string(),
+            local_hash: "blake3aaa".to_string(),
+            remote_hash: "blake3aaa".to_string(),
+            remote_etag: Some("\"sha256:fresh\"".to_string()),
+            remote_mtime: 1700000000000,
+            local_mtime: 1700000001000,
+        }])
+        .expect("commit");
+
+        let row = db.get_row("page.md").expect("get").expect("exists");
+        assert_eq!(row.remote_etag, Some("\"sha256:fresh\"".to_string()));
+    }
+
+    #[test]
+    fn commit_batch_stores_null_etag_when_the_server_gave_none() {
+        let (mut db, _tmp) = open_temp_db();
+        db.commit_batch(&[SyncResult::Synced {
+            path: "page.md".to_string(),
+            local_hash: "blake3aaa".to_string(),
+            remote_hash: "blake3aaa".to_string(),
+            remote_etag: None,
+            remote_mtime: 1700000000000,
+            local_mtime: 1700000001000,
+        }])
+        .expect("commit");
+
+        assert_eq!(
+            db.get_row("page.md")
+                .expect("get")
+                .expect("exists")
+                .remote_etag,
+            None
+        );
+    }
+
+    #[test]
+    fn commit_batch_inserts_a_readonly_row_for_a_path_never_tracked() {
+        // A brand new local file the server refuses has no row yet; an UPDATE
+        // would silently do nothing and the file would be retried forever.
+        let (mut db, _tmp) = open_temp_db();
+        db.commit_batch(&[SyncResult::ReadOnly {
+            path: "Library/Std/Config.md".to_string(),
+            local_hash: "blake3refused".to_string(),
+        }])
+        .expect("commit");
+
+        let row = db
+            .get_row("Library/Std/Config.md")
+            .expect("get")
+            .expect("read-only row should have been inserted");
+        assert_eq!(row.status, SyncStatus::ReadOnly);
+        assert_eq!(row.local_hash, Some("blake3refused".to_string()));
+    }
+
+    #[test]
+    fn commit_batch_readonly_keeps_the_remote_state_of_an_existing_row() {
+        let (mut db, _tmp) = open_temp_db();
+        let mut row = make_row("page.md");
+        row.remote_etag = Some("\"sha256:known\"".to_string());
+        row.remote_mtime = 1700000000000;
+        db.upsert_row(&row).expect("upsert");
+
+        db.commit_batch(&[SyncResult::ReadOnly {
+            path: "page.md".to_string(),
+            local_hash: "blake3refused".to_string(),
+        }])
+        .expect("commit");
+
+        let got = db.get_row("page.md").expect("get").expect("exists");
+        assert_eq!(got.status, SyncStatus::ReadOnly);
+        assert_eq!(got.local_hash, Some("blake3refused".to_string()));
+        assert_eq!(
+            got.remote_etag,
+            Some("\"sha256:known\"".to_string()),
+            "what we know about the server copy is still true after a refusal"
+        );
+        assert_eq!(got.remote_mtime, 1700000000000);
+    }
+
+    #[test]
+    fn get_rows_by_status_finds_readonly_rows() {
+        let (mut db, _tmp) = open_temp_db();
+        db.commit_batch(&[SyncResult::ReadOnly {
+            path: "Library/Std/Config.md".to_string(),
+            local_hash: "h".to_string(),
+        }])
+        .expect("commit");
+
+        let rows = db
+            .get_rows_by_status(&SyncStatus::ReadOnly)
+            .expect("query by status");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].path, "Library/Std/Config.md");
     }
 }
