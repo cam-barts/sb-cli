@@ -1,3 +1,9 @@
+## v1.9.0 (2026-09-26)
+
+### Feat
+
+- edge integration — runtime, sync safety, links/inbox, history, query (#9)
+
 ## v1.8.0 (2026-07-07)
 
 ### Feat
