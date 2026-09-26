@@ -1,3 +1,9 @@
+## v1.9.1 (2026-09-26)
+
+### Fix
+
+- **inbox**: readable human output, honour --no-color, hide done-task mentions (#10)
+
 ## v1.9.0 (2026-09-26)
 
 ### Feat
