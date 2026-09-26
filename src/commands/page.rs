@@ -47,12 +47,33 @@ pub fn validate_page_path(space_root: &Path, name: &str) -> SbResult<PathBuf> {
 ///
 /// This is where SilverBullet's markdown files actually live. It may differ
 /// from `space_root` (which is the directory containing `.sb/`) when the user
-/// has configured `sync.dir` to an absolute path or a subdirectory. All page
-/// read/write operations must use this directory; sync uses the same formula.
+/// has configured `sync.dir` to a subdirectory. All page read/write
+/// operations must use this directory; sync uses the same formula.
+///
+/// `Path::join` silently discards `space_root` when `sync.dir` is an absolute
+/// path, so an absolute `[sync] dir` in the user's config would otherwise
+/// make every page command operate on a directory completely outside the
+/// space. The containment check below rejects that rather than treating it
+/// as intended behaviour. This mirrors `resolve_content_dir` in
+/// `src/commands/sync.rs` (duplicated here, not called, since that function
+/// is private to that module).
 pub fn find_content_dir() -> SbResult<PathBuf> {
     let space_root = find_space_root()?;
     let config = crate::config::ResolvedConfig::load_from(&space_root)?;
-    Ok(space_root.join(&config.sync_dir.value))
+    let content_dir = space_root.join(&config.sync_dir.value);
+    if !content_dir.starts_with(&space_root) {
+        return Err(SbError::Config {
+            message: format!(
+                "sync dir '{}' resolves to {}, outside the space at {}.\n\
+                 An absolute `[sync] dir` overrides the space it is used from; \
+                 set a relative dir, or run from the space it belongs to.",
+                config.sync_dir.value,
+                content_dir.display(),
+                space_root.display()
+            ),
+        });
+    }
+    Ok(content_dir)
 }
 
 /// Find the space root using a layered resolver:
@@ -581,7 +602,15 @@ pub async fn execute_delete(
 }
 
 /// Append content to a page, creating it if it doesn't exist.
-pub async fn execute_append(name: &str, content: &str, quiet: bool, color: bool) -> SbResult<()> {
+pub async fn execute_append(
+    name: &str,
+    content: &str,
+    sign: &[String],
+    quiet: bool,
+    color: bool,
+) -> SbResult<()> {
+    let content = append_signature(content, sign);
+    let content = content.as_str();
     let content_dir = find_content_dir()?;
     let page_path = validate_page_path(&content_dir, name)?;
     if page_path.exists() {
@@ -618,6 +647,110 @@ pub async fn execute_append(name: &str, content: &str, quiet: bool, color: bool)
     }
     output::print_success(&format!("Appended to {}", name), color, quiet);
     Ok(())
+}
+
+/// Append a `-- @name` signature so it TERMINATES a block rather than
+/// landing inside one, per the SilverBullet rule that a signature marker
+/// must end its block to register as a signature (a mid-paragraph `@zef` is
+/// not one). A no-op (returns `content` unchanged) when `sign` is empty.
+///
+/// The block-termination rule differs by what `content` ends with:
+///
+/// - **Empty or whitespace-only content.** There is no block to terminate,
+///   so the result is just the bare signature line.
+/// - **Ends inside an open fenced code block** (an odd number of ` ``` `
+///   fences): a bare `-- @name` line there would just be more code text. The
+///   fence is closed first, then the signature is put on its own new line
+///   immediately after, with a trailing blank line (see "future-proofing"
+///   below).
+/// - **Ends with a CLOSING fence.** CommonMark forbids an info string on a
+///   closing fence, so appending the signature onto that line (the bug this
+///   function used to have) leaves the fence unterminated and corrupts
+///   everything after it. The signature instead goes on its own new line
+///   right after the fence — the code block is already closed, so no blank
+///   line is needed to start a fresh block there.
+/// - **A list item** (bullet, ordered, or task — detected from the first
+///   line, since a `sb daily` entry is always exactly one item), whether
+///   single-line or a multi-line item with indented continuation lines: the
+///   signature is appended *inline*, on the same line, at the very end of
+///   `content`. A bare unindented line below a list item risks being read as
+///   closing it, and appending to the end of the string lands on the last
+///   line regardless of its continuation indentation. No trailing blank line
+///   is added: the list marker on whatever gets appended next already gives
+///   it a hard block boundary.
+/// - **Everything else** (prose, a heading, a blockquote, a table row, ...):
+///   a blank line reliably ends *any* preceding block in CommonMark — a
+///   paragraph, a setext-heading candidate, a blockquote's lazy continuation,
+///   a table's row run — so a blank line is inserted before the signature,
+///   making the signature its own single-line block regardless of what kind
+///   of block preceded it.
+///
+/// Future-proofing: every branch except the list-item one also emits a
+/// *trailing* newline after the signature. `execute_append` joins entries
+/// with a single `'\n'`, so without that trailing newline a second signed
+/// append would land right below the first signature with no blank line
+/// between them — merging both into one paragraph and re-creating the
+/// original bug (a signature would then also cover whatever was appended
+/// after it). The trailing newline plus the next append's leading `'\n'`
+/// together form the blank line that keeps them separate blocks.
+pub(crate) fn append_signature(content: &str, sign: &[String]) -> String {
+    if sign.is_empty() {
+        return content.to_string();
+    }
+    let names: Vec<String> = sign
+        .iter()
+        .map(|n| crate::commands::inbox::normalize_identity(n))
+        .collect();
+    let signature = format!("-- {}", names.join(" "));
+
+    let trimmed = content.trim_end_matches('\n');
+
+    if trimmed.trim().is_empty() {
+        return signature;
+    }
+
+    if ends_inside_open_fenced_code_block(trimmed) {
+        return format!("{trimmed}\n```\n{signature}\n");
+    }
+
+    let last_line = trimmed.lines().next_back().unwrap_or("");
+    if last_line.trim_start().starts_with("```") {
+        return format!("{trimmed}\n{signature}\n");
+    }
+
+    let first_line = trimmed.lines().next().unwrap_or("");
+    if is_list_item_line(first_line) {
+        return format!("{trimmed} {signature}");
+    }
+
+    format!("{trimmed}\n\n{signature}\n")
+}
+
+/// True when `content` has an odd number of ` ``` ` fence markers, i.e. it
+/// ends inside a code block that was opened but never closed.
+fn ends_inside_open_fenced_code_block(content: &str) -> bool {
+    content
+        .lines()
+        .filter(|l| l.trim_start().starts_with("```"))
+        .count()
+        % 2
+        == 1
+}
+
+/// True when `line` opens a bullet, task, or ordered list item (`- `, `* `,
+/// `+ `, `1. `, `2) `, ...).
+fn is_list_item_line(line: &str) -> bool {
+    let t = line.trim_start();
+    let mut chars = t.chars();
+    match chars.next() {
+        Some('-') | Some('*') | Some('+') => chars.next() == Some(' '),
+        Some(c) if c.is_ascii_digit() => {
+            let digits: String = t.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let rest = &t[digits.len()..];
+            rest.starts_with(". ") || rest.starts_with(") ")
+        }
+        _ => false,
+    }
 }
 
 /// Move/rename a page, creating intermediate directories for the target.
@@ -682,6 +815,7 @@ pub async fn execute_move(
                 path: new_rel,
                 local_hash: None,
                 remote_hash: None,
+                remote_etag: None,
                 remote_mtime: 0,
                 local_mtime: 0,
                 status: crate::sync::SyncStatus::New,
@@ -1107,7 +1241,7 @@ mod tests {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
             seed_page(tmp.path(), "AppendMe", "first line");
-            execute_append("AppendMe", "second line", true, false)
+            execute_append("AppendMe", "second line", &[], true, false)
                 .await
                 .expect("append");
             let body = std::fs::read_to_string(tmp.path().join("AppendMe.md")).unwrap();
@@ -1118,11 +1252,295 @@ mod tests {
         async fn append_creates_new_page_when_missing() {
             let tmp = make_space(Some("https://example.com"));
             let _g = SbSpaceGuard::set(tmp.path());
-            execute_append("BrandNew", "fresh content", true, false)
+            execute_append("BrandNew", "fresh content", &[], true, false)
                 .await
                 .expect("append-creates");
             let body = std::fs::read_to_string(tmp.path().join("BrandNew.md")).unwrap();
             assert_eq!(body, "fresh content");
+        }
+
+        #[tokio::test]
+        async fn append_with_sign_terminates_the_appended_block() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_append(
+                "Signed",
+                "Wrote the plan",
+                &["zef".to_string()],
+                true,
+                false,
+            )
+            .await
+            .expect("append");
+            let body = std::fs::read_to_string(tmp.path().join("Signed.md")).unwrap();
+            // Prose: the signature is its own blank-line-separated block, not
+            // a soft-wrapped continuation of the same paragraph.
+            assert_eq!(body, "Wrote the plan\n\n-- @zef\n");
+        }
+
+        #[tokio::test]
+        async fn append_with_sign_twice_produces_two_separate_signed_blocks() {
+            // The originally reported bug: two consecutive `--sign` appends
+            // must not merge into one Markdown paragraph, or the first
+            // signature ends up attributing the second entry too.
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_append("Signed", "First note", &["ada".to_string()], true, false)
+                .await
+                .expect("first append");
+            execute_append("Signed", "Second note", &["zef".to_string()], true, false)
+                .await
+                .expect("second append");
+            let body = std::fs::read_to_string(tmp.path().join("Signed.md")).unwrap();
+            let paragraphs: Vec<&str> = body
+                .split("\n\n")
+                .map(|p| p.trim_end_matches('\n'))
+                .filter(|p| !p.is_empty())
+                .collect();
+            assert_eq!(
+                paragraphs,
+                vec!["First note", "-- @ada", "Second note", "-- @zef"],
+                "each entry and each signature must be its own block, got: {body:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn append_with_sign_on_a_list_item_stays_on_the_same_line() {
+            let tmp = make_space(Some("https://example.com"));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute_append(
+                "SignedList",
+                "* Fixed the bug",
+                &["ada".to_string(), "zef".to_string()],
+                true,
+                false,
+            )
+            .await
+            .expect("append");
+            let body = std::fs::read_to_string(tmp.path().join("SignedList.md")).unwrap();
+            assert_eq!(body, "* Fixed the bug -- @ada @zef");
+        }
+
+        // --- find_content_dir: path containment ---
+
+        #[tokio::test]
+        async fn find_content_dir_rejects_absolute_out_of_space_sync_dir() {
+            let tmp = tempfile::tempdir().expect("create tempdir");
+            let sb_dir = tmp.path().join(".sb");
+            std::fs::create_dir_all(&sb_dir).expect("create .sb");
+            let outside = tempfile::tempdir().expect("create outside tempdir");
+            std::fs::write(
+                sb_dir.join("config.toml"),
+                format!(
+                    "server_url = \"https://example.com\"\n[sync]\ndir = \"{}\"\n",
+                    outside.path().display()
+                ),
+            )
+            .expect("write config.toml");
+            let _g = SbSpaceGuard::set(tmp.path());
+            let err = find_content_dir().unwrap_err();
+            match err {
+                SbError::Config { message } => {
+                    assert!(
+                        message.contains("outside the space"),
+                        "error should explain the escape: {message}"
+                    );
+                }
+                other => panic!("expected Config error, got: {other:?}"),
+            }
+        }
+
+        // --- append_signature (pure) ---
+
+        #[test]
+        fn append_signature_is_a_noop_with_no_signers() {
+            assert_eq!(append_signature("hello", &[]), "hello");
+        }
+
+        #[test]
+        fn append_signature_terminates_prose_as_its_own_paragraph() {
+            // A blank line before the signature -- this is what actually
+            // terminates the preceding paragraph rather than gluing the
+            // signature onto the end of it with a soft line break.
+            assert_eq!(
+                append_signature("This paragraph was written together.", &["ada".into()]),
+                "This paragraph was written together.\n\n-- @ada\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_handles_content_that_already_ends_in_a_newline() {
+            // A trailing newline (or several) on the input is normalized away
+            // before the real block-break separator is applied.
+            assert_eq!(
+                append_signature("Already terminated.\n\n\n", &["ada".into()]),
+                "Already terminated.\n\n-- @ada\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_two_consecutive_prose_signed_appends_are_separate_blocks() {
+            // Simulates what execute_append actually writes to disk: entry 1
+            // written fresh, entry 2 joined with a single '\n' the way
+            // execute_append does. The two signatures must not merge into
+            // one paragraph the way the original bug did.
+            let first = append_signature("First note", &["ada".into()]);
+            let second = append_signature("Second note", &["zef".into()]);
+            let file = format!("{first}\n{second}");
+            assert_eq!(file, "First note\n\n-- @ada\n\nSecond note\n\n-- @zef\n");
+            // Every entry and every signature is its own blank-line-separated
+            // paragraph -- no paragraph contains more than one line of
+            // "real" content plus, at most, its own signature.
+            let paragraphs: Vec<&str> = file
+                .split("\n\n")
+                .map(|p| p.trim_end_matches('\n'))
+                .filter(|p| !p.is_empty())
+                .collect();
+            assert_eq!(
+                paragraphs,
+                vec!["First note", "-- @ada", "Second note", "-- @zef"]
+            );
+        }
+
+        #[test]
+        fn append_signature_on_empty_content_is_just_the_signature() {
+            assert_eq!(append_signature("", &["ada".into()]), "-- @ada");
+        }
+
+        #[test]
+        fn append_signature_on_whitespace_only_content_is_just_the_signature() {
+            assert_eq!(append_signature("   \n  \n", &["ada".into()]), "-- @ada");
+        }
+
+        #[test]
+        fn append_signature_on_a_task_item_is_appended_inline() {
+            assert_eq!(
+                append_signature("- [ ] Ship the release", &["zef".into()]),
+                "- [ ] Ship the release -- @zef"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_a_heading_breaks_into_a_new_block() {
+            assert_eq!(
+                append_signature("# Status update", &["ada".into()]),
+                "# Status update\n\n-- @ada\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_a_blockquote_breaks_into_a_new_block() {
+            assert_eq!(
+                append_signature("> quoted wisdom", &["ada".into()]),
+                "> quoted wisdom\n\n-- @ada\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_a_table_row_breaks_into_a_new_block() {
+            assert_eq!(
+                append_signature("| a | b |", &["ada".into()]),
+                "| a | b |\n\n-- @ada\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_a_list_item_is_appended_inline() {
+            assert_eq!(
+                append_signature("* Did the thing", &["zef".into()]),
+                "* Did the thing -- @zef"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_a_multiline_list_item_appends_after_the_continuation() {
+            // The continuation line is indented and carries no bullet of its
+            // own; appending inline (rather than on a new, unindented line)
+            // sidesteps having to get that indentation right.
+            assert_eq!(
+                append_signature("* First line\n  second line", &["zef".into()]),
+                "* First line\n  second line -- @zef"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_an_ordered_list_item_is_appended_inline() {
+            assert_eq!(
+                append_signature("1. Do the thing", &["zef".into()]),
+                "1. Do the thing -- @zef"
+            );
+        }
+
+        #[test]
+        fn append_signature_on_a_list_item_with_an_open_fence_closes_it_as_a_new_block() {
+            // The trailing structure (an open fence) takes priority over the
+            // fact that the content happens to start with a list marker: the
+            // fence must be closed before anything else is written.
+            let content = "- did a thing\n\n```lua\ncode";
+            assert_eq!(
+                append_signature(content, &["cam".into()]),
+                "- did a thing\n\n```lua\ncode\n```\n-- @cam\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_closes_an_open_fenced_code_block_before_signing() {
+            // Signing inside a code fence would just be more code text, not a
+            // real signature -- so the fence is closed first.
+            assert_eq!(
+                append_signature("```\nsome code", &["zef".into()]),
+                "```\nsome code\n```\n-- @zef\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_signing_after_a_closing_fence_does_not_break_the_fence() {
+            // The reported corruption: content already ends with a properly
+            // closed fence. The signature must land on its own new line, not
+            // be glued onto the closing ``` (which CommonMark forbids an
+            // info string on, and which would leave the fence unterminated).
+            let content = "- did a thing\n\n```lua\ncode\n```";
+            let result = append_signature(content, &["cam".into()]);
+            assert_eq!(result, "- did a thing\n\n```lua\ncode\n```\n-- @cam\n");
+            // The fence itself must be untouched -- still exactly ``` alone
+            // on its line, with nothing appended to it.
+            let fence_line = result.lines().nth(4).unwrap();
+            assert_eq!(fence_line, "```");
+        }
+
+        #[test]
+        fn append_signature_multiple_signers_render_as_one_dash_dash_line() {
+            assert_eq!(
+                append_signature("done", &["ada".into(), "zef".into()]),
+                "done\n\n-- @ada @zef\n"
+            );
+        }
+
+        #[test]
+        fn append_signature_never_double_prefixes_a_name_that_already_has_at() {
+            assert_eq!(
+                append_signature("done", &["@zef".into()]),
+                "done\n\n-- @zef\n"
+            );
+        }
+
+        #[test]
+        fn is_list_item_line_recognizes_bullets_tasks_and_ordered_markers() {
+            assert!(is_list_item_line("- item"));
+            assert!(is_list_item_line("* item"));
+            assert!(is_list_item_line("+ item"));
+            assert!(is_list_item_line("* [ ] task"));
+            assert!(is_list_item_line("1. item"));
+            assert!(is_list_item_line("2) item"));
+            assert!(!is_list_item_line("plain prose"));
+            assert!(!is_list_item_line("-- @zef")); // a signature is not a list item
+        }
+
+        #[test]
+        fn ends_inside_open_fenced_code_block_counts_fence_parity() {
+            assert!(ends_inside_open_fenced_code_block("```\ncode"));
+            assert!(!ends_inside_open_fenced_code_block("```\ncode\n```"));
+            assert!(!ends_inside_open_fenced_code_block("no fences here"));
         }
 
         // --- execute_move ---

@@ -1,7 +1,7 @@
 use crate::cli::OutputFormat;
 use crate::commands::server::{build_client, runtime_unavailable_error};
 use crate::config::ResolvedConfig;
-use crate::error::{SbError, SbResult};
+use crate::error::SbResult;
 
 pub async fn execute(
     cli_token: Option<&str>,
@@ -23,41 +23,7 @@ pub async fn execute(
 
     // Wrap query as Lua script using query[[...]] syntax
     let lua_script = format!("return query[[{}]]", query);
-    let resp = client
-        .post_text("/.runtime/lua_script", &lua_script)
-        .await?;
-    let status = resp.status();
-
-    // Handle 503: Runtime API went down between detection and use
-    if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-        return Err(runtime_unavailable_error());
-    }
-
-    let body = resp.text().await.map_err(|e| SbError::HttpStatus {
-        status: status.as_u16(),
-        url: format!("{}/.runtime/lua_script", client.base_url()),
-        body: format!("failed to read response: {e}"),
-    })?;
-
-    let parsed: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| SbError::HttpStatus {
-            status: status.as_u16(),
-            url: format!("{}/.runtime/lua_script", client.base_url()),
-            body: format!("invalid JSON response: {e}"),
-        })?;
-
-    if let Some(error) = parsed.get("error").and_then(|e| e.as_str()) {
-        return Err(SbError::HttpStatus {
-            status: status.as_u16(),
-            url: format!("{}/.runtime/lua_script", client.base_url()),
-            body: format!("Query error: {error}"),
-        });
-    }
-
-    let result = parsed
-        .get("result")
-        .cloned()
-        .unwrap_or(serde_json::Value::Null);
+    let result = crate::runtime::eval(&client, "/.runtime/lua_script", &lua_script).await?;
 
     match format {
         OutputFormat::Json => {
@@ -156,6 +122,7 @@ fn value_to_string(v: &serde_json::Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::SbError;
     use crate::test_util::{make_space, SbSpaceGuard};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -218,9 +185,10 @@ mod tests {
         let err = execute(None, "garbage", &[], &OutputFormat::Json, true, false)
             .await
             .unwrap_err();
+        // A malformed query is the caller's fault: usage error, not server fault.
         match err {
-            SbError::HttpStatus { body, .. } => assert!(body.contains("bad query syntax")),
-            other => panic!("expected HttpStatus, got: {other:?}"),
+            SbError::Usage(msg) => assert!(msg.contains("bad query syntax")),
+            other => panic!("expected Usage, got: {other:?}"),
         }
     }
 

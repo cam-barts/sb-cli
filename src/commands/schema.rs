@@ -40,6 +40,9 @@ fn command_to_json(cmd: &clap::Command) -> serde_json::Value {
 
     serde_json::json!({
         "about": cmd.get_about().map(|s| s.to_string()),
+        // Worked examples live in after_help (see `sb query --help`). Agents read
+        // this schema instead of the help text, so they need them here too.
+        "examples": cmd.get_after_help().map(|s| s.to_string()),
         "args": args,
         "subcommands": subcommands,
     })
@@ -106,6 +109,20 @@ mod tests {
             has_upsert,
             "page create should expose --upsert in the schema"
         );
+    }
+
+    /// `sb query`'s worked examples are the only discoverability surface for the
+    /// query language, and agents read them from here rather than from --help.
+    #[test]
+    fn query_examples_reach_the_schema() {
+        let cmd = crate::cli::Cli::command();
+        let value = command_to_json(&cmd);
+        let examples = value["subcommands"]["query"]["examples"]
+            .as_str()
+            .expect("query should carry examples");
+        for fact in ["where zoteroKey", "select name, zoteroKey", "sb describe"] {
+            assert!(examples.contains(fact), "examples should mention {fact}");
+        }
     }
 
     #[test]

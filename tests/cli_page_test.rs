@@ -628,6 +628,157 @@ fn page_append_nonexistent_creates_page_with_content() {
     );
 }
 
+#[test]
+fn page_append_sign_terminates_the_appended_block_inline() {
+    let dir = setup_space();
+
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "append",
+            "signed",
+            "--content",
+            "Fixed the bug",
+            "--sign",
+            "zef",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(dir.path().join("signed.md")).expect("read file");
+    // Prose (not a list item): the signature must terminate its own block, so
+    // it lands after a blank line -- a separate paragraph, not a soft-wrapped
+    // continuation of the same one.
+    assert_eq!(content, "Fixed the bug\n\n-- @zef\n");
+}
+
+#[test]
+fn page_append_sign_twice_produces_two_separate_blocks() {
+    let dir = setup_space();
+
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "append",
+            "signed",
+            "--content",
+            "First note",
+            "--sign",
+            "ada",
+        ])
+        .assert()
+        .success();
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "append",
+            "signed",
+            "--content",
+            "Second note",
+            "--sign",
+            "zef",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(dir.path().join("signed.md")).expect("read file");
+    let paragraphs: Vec<&str> = content
+        .split("\n\n")
+        .map(|p| p.trim_end_matches('\n'))
+        .filter(|p| !p.is_empty())
+        .collect();
+    assert_eq!(
+        paragraphs,
+        vec!["First note", "-- @ada", "Second note", "-- @zef"],
+        "each note and each signature must be its own block, got: {content:?}"
+    );
+}
+
+#[test]
+fn page_append_sign_after_a_closing_fence_does_not_corrupt_it() {
+    let dir = setup_space();
+
+    // The appended entry itself is a list item whose content ends with a
+    // closed fenced code block -- the exact shape that used to corrupt the
+    // fence by gluing " -- @cam" onto the closing ``` line.
+    // `--content=...` (rather than a separate value token) sidesteps clap's
+    // hyphen-ambiguity rejection, since the content itself starts with `- `.
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "append",
+            "notes-with-code",
+            "--content=- did a thing\n\n```lua\ncode\n```",
+            "--sign",
+            "cam",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(dir.path().join("notes-with-code.md")).unwrap();
+    // The fence must remain intact -- a bare ``` line with nothing appended
+    // to it -- and the signature must appear on its own line after it.
+    assert!(
+        content.lines().any(|l| l == "```"),
+        "closing fence must remain a bare ``` line, got: {content:?}"
+    );
+    assert!(
+        content.contains("```\n-- @cam"),
+        "signature should follow the closed fence on its own line, got: {content:?}"
+    );
+}
+
+#[test]
+fn page_command_rejects_absolute_out_of_space_sync_dir() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let sb_dir = dir.path().join(".sb");
+    std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
+    let outside = tempfile::tempdir().expect("create outside tempdir");
+    let mut f = std::fs::File::create(sb_dir.join("config.toml")).expect("create config.toml");
+    f.write_all(
+        format!(
+            "server_url = \"https://sb.example.com\"\n[sync]\ndir = \"{}\"\n",
+            outside.path().display()
+        )
+        .as_bytes(),
+    )
+    .expect("write config.toml");
+
+    Command::cargo_bin("sb")
+        .expect("sb binary")
+        .current_dir(dir.path())
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["page", "list"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("outside the space"));
+}
+
+#[test]
+fn page_append_multiple_signers_render_as_one_dash_dash_line() {
+    let dir = setup_space();
+
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "append",
+            "signed",
+            "--content",
+            "* Reviewed the PR",
+            "--sign",
+            "ada",
+            "--sign",
+            "@zef",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(dir.path().join("signed.md")).expect("read file");
+    // List item: signature stays inline on the same bullet, and a name that
+    // already carried `@` is not double-prefixed.
+    assert_eq!(content, "* Reviewed the PR -- @ada @zef");
+}
+
 // ---------------------------------------------------------------------------
 // Task 2: page move tests (TDD)
 // ---------------------------------------------------------------------------

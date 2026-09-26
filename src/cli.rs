@@ -16,6 +16,41 @@ Exit codes:
 
 With `--format json`, failures also print `{\"error\",\"code\",\"remediation\"}` to stderr.";
 
+/// Worked `sb query` examples, shown under `sb query --help`. Every line here
+/// was verified against a real space; the notes are the four things that
+/// otherwise cost an afternoon of trial and error (bare-attribute filters,
+/// `select` projecting *and* de-duplicating, single-field results coming back
+/// flat, and `=` not being a comparison).
+const QUERY_EXAMPLES: &str = "\
+Examples:
+  # newest pages first
+  sb query 'from index.tag \"page\" order by lastModified desc limit 10'
+
+  # a bare attribute name is an existence filter: pages that have a zoteroKey
+  sb query 'from index.tag \"page\" where zoteroKey'
+
+  # select projects fields -- and returns DISTINCT rows
+  sb query 'from index.tag \"page\" where zoteroKey select name, zoteroKey'
+
+  # one query for a whole lookup table, not one query per key
+  sb query 'from index.tag \"page\" where zoteroKey select zoteroKey, name' \\
+    | jq 'map({(.zoteroKey): .name}) | add'
+
+  # open tasks for one assignee
+  sb query 'from index.tag \"task\" where done == false and assignee == \"cam\"'
+
+  # tags are namespaced, and each level is its own source
+  sb query 'from index.tag \"zotero/journalArticle\" limit 5'
+
+Notes:
+  `index.tag \"NAME\"` is the only query source. Run `sb describe` for the tag
+  names that exist in this space, and `sb describe NAME` for the attributes
+  those objects carry -- that is what you can filter and select on.
+
+  Comparison is `==`, never `=`; a single `=` is a syntax error.
+  Selecting exactly one field returns a flat array of values, not objects.
+  `limit` caps rows; `order by FIELD [desc]` sorts them.";
+
 #[derive(Parser)]
 #[command(
     name = "sb",
@@ -59,6 +94,12 @@ pub struct Cli {
     /// (or `--force`) for agents to run mutations non-interactively.
     #[arg(long, short = 'y', global = true)]
     pub yes: bool,
+
+    /// Request timeout in seconds. Raises both the local HTTP timeout and the
+    /// Runtime API's own `X-Timeout`, which otherwise each default to 30 and
+    /// race each other on a slow query.
+    #[arg(long, global = true, value_name = "SECONDS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -144,6 +185,11 @@ pub enum Commands {
         /// Legacy synonym for the positional entry (kept for back-compat)
         #[arg(long, value_name = "TEXT")]
         append: Option<String>,
+        /// Sign the entry with `-- @name`, crediting who wrote it. Repeatable.
+        /// Credits an author rather than addressing a recipient, so an agent
+        /// signing its own entry does not queue a mention for itself.
+        #[arg(long, value_name = "NAME")]
+        sign: Vec<String>,
 
         /// List the most recent N matching entries (triggers read mode)
         #[arg(long, short = 'n', value_name = "N")]
@@ -179,11 +225,20 @@ pub enum Commands {
         workers: Option<u32>,
     },
     /// Evaluate a Space Lua expression via the Runtime API
+    ///
+    /// A bare expression goes to `/.runtime/lua`, which does NOT accept
+    /// statements: `sb lua 'return 1+1'` is a Lua syntax error, not a server
+    /// fault. Use `--script FILE`, or `--script -` to read stdin, for anything
+    /// with statements or an explicit `return`.
     Lua {
-        /// Lua expression to evaluate
-        expression: String,
+        /// Lua expression to evaluate. Omit when using --script.
+        expression: Option<String>,
+        /// Run a multi-statement Lua script from a file. Use `-` for stdin.
+        #[arg(long, value_name = "FILE", conflicts_with = "expression")]
+        script: Option<String>,
     },
     /// Execute an index query via the Runtime API
+    #[command(after_help = QUERY_EXAMPLES, after_long_help = QUERY_EXAMPLES)]
     Query {
         /// Query expression (e.g., `from index.tag "page" limit 10`)
         query: String,
@@ -208,6 +263,9 @@ pub enum Commands {
         /// Which side to show: both (default), client, or server
         #[arg(long, value_enum, default_value = "both")]
         source: LogSourceArg,
+        /// Maximum entries to request. The server retains up to 1000.
+        #[arg(long, short = 'n', value_name = "N")]
+        lines: Option<usize>,
     },
     /// Save a PNG screenshot of the SilverBullet headless browser
     Screenshot {
@@ -216,17 +274,49 @@ pub enum Commands {
         #[arg(long, short = 'o')]
         output: Option<String>,
     },
-    /// Describe the observed schema of objects tagged with the given name
+    /// Describe the observed schema of objects tagged with the given name,
+    /// or list every tag in the index when no tag is given
     Describe {
-        /// Tag name to introspect (e.g. task, page, link)
-        tag: String,
+        /// Tag name to introspect (e.g. task, page, link). Omit to list all
+        /// indexed tags with their object counts.
+        tag: Option<String>,
         /// Number of objects to sample when inferring the schema
         #[arg(long, default_value_t = 100)]
         limit: usize,
         /// Restrict JSON output to these comma-separated top-level fields
-        /// (`tag`, `sampled`, `fields`)
+        /// (`tag`, `sampled`, `fields`; in list mode `name`, `count`, `parents`)
         #[arg(long = "fields", value_delimiter = ',', value_name = "FIELD,...")]
         out_fields: Vec<String>,
+    },
+    /// Show wiki links between pages, from the server's relation index
+    Links {
+        /// Page name to report on. Omit to pick interactively.
+        page: Option<String>,
+        /// Show links pointing AT this page (backlinks). The default.
+        #[arg(long)]
+        to: bool,
+        /// Show links pointing OUT of this page instead of at it
+        #[arg(long, conflicts_with = "to")]
+        from: bool,
+        /// Maximum number of relations to return
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Restrict JSON output to these comma-separated top-level fields
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
+    },
+    /// List open `@mention`s addressed to an identity (the Mention Inbox)
+    Inbox {
+        /// Identity to list mentions for, with or without the leading `@`.
+        /// Falls back to the `identity` key in the space config.
+        #[arg(long, value_name = "NAME")]
+        to: Option<String>,
+        /// Maximum number of mentions to return
+        #[arg(long, default_value_t = 200)]
+        limit: usize,
+        /// Restrict JSON output to these comma-separated top-level fields
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
     },
     /// Work with page templates (pages tagged `meta/template/page`)
     Template {
@@ -350,10 +440,16 @@ pub enum SyncCommands {
     Status,
     /// List files in conflict
     Conflicts,
-    /// Resolve a sync conflict
+    /// Resolve a sync conflict (omit the path to pick from the conflict list)
     Resolve {
-        /// File path relative to space root (e.g., Journal/2026-04-05.md)
-        path: String,
+        /// File path relative to space root (e.g., Journal/2026-04-05.md).
+        /// Omit to pick interactively from the files currently in conflict.
+        path: Option<String>,
+        /// Resolve every conflicted file. Needs --keep-local, --keep-remote,
+        /// --force or --diff when stdin is not a terminal, since there is
+        /// nobody to answer the per-file prompt.
+        #[arg(long, conflicts_with = "path")]
+        all: bool,
         /// Keep the local version (upload to server)
         #[arg(long, conflicts_with = "keep_remote")]
         keep_local: bool,
@@ -366,6 +462,22 @@ pub enum SyncCommands {
         /// Apply default resolution (keep local) without prompting
         #[arg(long)]
         force: bool,
+    },
+    /// Delete conflict stashes under .sb/conflicts/ that carry no information:
+    /// ones byte-identical to the live local file, and duplicates of a newer
+    /// stash. A path still in conflict keeps its newest stash so `sb sync
+    /// resolve` has something to diff against.
+    PruneStashes {
+        /// Only prune stashes for this path (relative to the space root).
+        /// Omit to sweep every stashed path.
+        path: Option<String>,
+        /// Also remove every stash for paths that are no longer in conflict,
+        /// and waive the keep-the-newest rule for ones that still are.
+        #[arg(long)]
+        all: bool,
+        /// List what would be pruned without deleting anything
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -490,6 +602,46 @@ pub enum PageCommands {
         /// Content to append
         #[arg(long)]
         content: String,
+        /// Sign the appended block with `-- @name`, crediting who wrote it.
+        /// Repeatable. A signature credits an author; it does NOT address a
+        /// recipient, so it never lands in anyone's Mention Inbox.
+        #[arg(long, value_name = "NAME")]
+        sign: Vec<String>,
+    },
+    /// List a page's revision history
+    History {
+        /// Page name (without .md extension). Omit to pick interactively.
+        name: Option<String>,
+        /// Maximum revisions to return (server caps this at 200)
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Page back from this revision hash
+        #[arg(long, value_name = "HASH")]
+        before: Option<String>,
+    },
+    /// Show what a revision changed in a page, as a unified diff
+    Diff {
+        /// Page name (without .md extension). Omit to pick interactively.
+        name: Option<String>,
+        /// Full 40-character commit hash. Omit to diff uncommitted changes
+        /// (HEAD versus what is on disk).
+        #[arg(long, value_name = "HASH")]
+        rev: Option<String>,
+    },
+    /// Restore a page to an earlier revision
+    ///
+    /// Writes the old content to the LOCAL file and leaves it for the next
+    /// sync to push, so the restore goes through the same conflict handling as
+    /// any other local edit rather than around it.
+    Restore {
+        /// Page name (without .md extension). Omit to pick interactively.
+        name: Option<String>,
+        /// Full 40-character commit hash to restore
+        #[arg(long, value_name = "HASH")]
+        rev: String,
+        /// Skip the confirmation prompt
+        #[arg(long)]
+        force: bool,
     },
     /// Move/rename a page
     Move {

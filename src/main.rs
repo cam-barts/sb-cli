@@ -34,6 +34,12 @@ async fn main() {
     output::set_no_input(cli.no_input);
     output::set_assume_yes(cli.yes);
 
+    // Must be recorded before the first SbClient is built: the reqwest timeout
+    // is baked in at construction, and the X-Timeout header reads the same value.
+    if let Some(secs) = cli.timeout {
+        sb_cli::client::set_timeout_secs(secs);
+    }
+
     debug!(
         verbose = cli.verbose,
         quiet = cli.quiet,
@@ -166,9 +172,58 @@ async fn main() {
                     )
                     .await
                 }
-                PageCommands::Append { name, content } => {
-                    commands::page::execute_append(&name, &content, cli.quiet, output_config.color)
-                        .await
+                PageCommands::Append {
+                    name,
+                    content,
+                    sign,
+                } => {
+                    commands::page::execute_append(
+                        &name,
+                        &content,
+                        &sign,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
+                }
+                PageCommands::History {
+                    name,
+                    limit,
+                    before,
+                } => {
+                    commands::revisions::execute_history(
+                        cli.token.as_deref(),
+                        name.as_deref(),
+                        limit,
+                        before.as_deref(),
+                        &format,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
+                }
+                PageCommands::Diff { name, rev } => {
+                    commands::revisions::execute_diff(
+                        cli.token.as_deref(),
+                        name.as_deref(),
+                        rev.as_deref(),
+                        &format,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
+                }
+                PageCommands::Restore { name, rev, force } => {
+                    commands::revisions::execute_restore(
+                        cli.token.as_deref(),
+                        name.as_deref(),
+                        &rev,
+                        force,
+                        &format,
+                        cli.quiet,
+                        output_config.color,
+                    )
+                    .await
                 }
                 PageCommands::Move {
                     name,
@@ -198,6 +253,7 @@ async fn main() {
             task_tag,
             no_task_tag,
             append,
+            sign,
             limit,
             from,
             to,
@@ -220,6 +276,7 @@ async fn main() {
                 task_tag: task_tag.as_deref(),
                 no_task_tag,
                 append: append.as_deref(),
+                sign: &sign,
                 limit,
                 from: from.as_deref(),
                 to: to.as_deref(),
@@ -266,10 +323,25 @@ async fn main() {
                     )
                     .await
                 }
-                Some(SyncCommands::Status) => commands::sync::execute_status(&format).await,
-                Some(SyncCommands::Conflicts) => commands::sync::execute_conflicts(&format).await,
+                Some(SyncCommands::Status) => {
+                    commands::sync::execute_status(&format, cli.quiet).await
+                }
+                Some(SyncCommands::Conflicts) => {
+                    commands::sync::execute_conflicts(&format, cli.quiet).await
+                }
+                Some(SyncCommands::PruneStashes { path, all, dry_run }) => {
+                    commands::sync::execute_prune_stashes(
+                        path.as_deref(),
+                        all,
+                        dry_run,
+                        &format,
+                        cli.quiet,
+                    )
+                    .await
+                }
                 Some(SyncCommands::Resolve {
                     path,
+                    all,
                     keep_local,
                     keep_remote,
                     diff,
@@ -277,7 +349,8 @@ async fn main() {
                 }) => {
                     commands::sync::execute_resolve(
                         cli.token.as_deref(),
-                        &path,
+                        path.as_deref(),
+                        all,
                         keep_local,
                         keep_remote,
                         diff,
@@ -307,11 +380,12 @@ async fn main() {
                 }
             }
         }
-        Some(Commands::Lua { expression }) => {
+        Some(Commands::Lua { expression, script }) => {
             debug!("dispatching: lua");
             commands::lua::execute(
                 cli.token.as_deref(),
-                &expression,
+                expression.as_deref(),
+                script.as_deref(),
                 &format,
                 cli.quiet,
                 output_config.color,
@@ -344,6 +418,7 @@ async fn main() {
             follow,
             interval_ms,
             source,
+            lines,
         }) => {
             debug!("dispatching: logs");
             commands::logs::execute(
@@ -351,6 +426,7 @@ async fn main() {
                 follow,
                 interval_ms,
                 source.into(),
+                lines,
                 &format,
                 cli.quiet,
                 output_config.color,
@@ -376,9 +452,42 @@ async fn main() {
             debug!("dispatching: describe");
             commands::describe::execute(
                 cli.token.as_deref(),
-                &tag,
+                tag.as_deref(),
                 limit,
                 &out_fields,
+                &format,
+                cli.quiet,
+                output_config.color,
+            )
+            .await
+        }
+        Some(Commands::Links {
+            page,
+            to: _,
+            from,
+            limit,
+            fields,
+        }) => {
+            debug!("dispatching: links");
+            commands::links::execute(
+                cli.token.as_deref(),
+                page.as_deref(),
+                from,
+                limit,
+                &fields,
+                &format,
+                cli.quiet,
+                output_config.color,
+            )
+            .await
+        }
+        Some(Commands::Inbox { to, limit, fields }) => {
+            debug!("dispatching: inbox");
+            commands::inbox::execute(
+                cli.token.as_deref(),
+                to.as_deref(),
+                limit,
+                &fields,
                 &format,
                 cli.quiet,
                 output_config.color,

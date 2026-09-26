@@ -4,9 +4,30 @@ use reqwest::{
     header::{self, HeaderMap, HeaderValue},
     Client, ClientBuilder, StatusCode,
 };
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::error::{SbError, SbResult};
+
+/// Request timeout in seconds. The SilverBullet Runtime API defaults to 30s of
+/// its own, so the two must move together: raising only the client side leaves
+/// the server hanging up first, and raising only the server side leaves reqwest
+/// aborting first. `--timeout` sets this once at startup and both the reqwest
+/// builder and the `X-Timeout` header read it.
+static TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_TIMEOUT_SECS);
+
+/// Matches the Runtime API's own documented default.
+pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
+
+/// Record the `--timeout` flag. Call once during startup.
+pub fn set_timeout_secs(secs: u64) {
+    TIMEOUT_SECS.store(secs, Ordering::Relaxed);
+}
+
+/// The configured request timeout in seconds.
+pub fn timeout_secs() -> u64 {
+    TIMEOUT_SECS.load(Ordering::Relaxed)
+}
 
 /// Characters to percent-encode in URL path segments.
 ///
@@ -46,6 +67,26 @@ const PATH_SEGMENT: &AsciiSet = &CONTROLS
 /// Percent-encode a file path for use in a URL, preserving `/` separators.
 fn encode_path(path: &str) -> String {
     utf8_percent_encode(path, PATH_SEGMENT).to_string()
+}
+
+/// Build the `?limit=&since=` query string for GET /.runtime/logs.
+///
+/// Returns `""` when both are `None`. `since` is omitted (not sent as
+/// `since=`) when `None` -- that distinction is load-bearing, see
+/// `get_runtime_logs`.
+fn runtime_logs_query_string(limit: Option<usize>, since: Option<i64>) -> String {
+    let mut params = Vec::new();
+    if let Some(limit) = limit {
+        params.push(format!("limit={limit}"));
+    }
+    if let Some(since) = since {
+        params.push(format!("since={since}"));
+    }
+    if params.is_empty() {
+        String::new()
+    } else {
+        format!("?{}", params.join("&"))
+    }
 }
 
 /// File metadata returned by GET /.fs listing.
@@ -107,6 +148,37 @@ pub struct RuntimeLogs {
     pub extra: std::collections::BTreeMap<String, serde_json::Value>,
 }
 
+/// A single git-backed revision of one file, as returned within the
+/// `revisions` array of GET `/.revisions/<path>`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RevisionEntry {
+    pub rev: String,
+    /// Unix milliseconds (matches `FileMeta` convention -- never seconds).
+    pub timestamp: i64,
+    pub author: String,
+    pub message: String,
+    #[serde(default)]
+    pub added: u64,
+    #[serde(default)]
+    pub removed: u64,
+}
+
+/// GET `/.revisions/<path>` (no `rev`) response: one file's revision history.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRevisions {
+    /// "managed" | "unmanaged" -- unmanaged spaces can still have a (possibly
+    /// empty) revision list; that is not an error.
+    pub mode: String,
+    /// True when the file on disk differs from the last commit.
+    pub uncommitted: bool,
+    pub revisions: Vec<RevisionEntry>,
+    /// True when more revisions exist beyond `limit` (page further back with
+    /// `before`).
+    pub more: bool,
+}
+
 /// HTTP client wrapper for SilverBullet API.
 ///
 /// Bakes `X-Sync-Mode: true` and `Authorization: Bearer <token>` into every
@@ -140,7 +212,7 @@ impl SbClient {
         let client = ClientBuilder::new()
             .default_headers(headers)
             .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(30))
+            .timeout(Duration::from_secs(timeout_secs()))
             .build()
             .map_err(|e| SbError::Config {
                 message: format!("failed to build HTTP client: {e}"),
@@ -196,6 +268,11 @@ impl SbClient {
         }
         let resp = Self::check_response(resp, &url).await?;
         let status = resp.status();
+        // Same diagnostic as `get_file`. This is the cheapest way to ask a
+        // running deployment whether conditional writes survive the path to it:
+        // the same `/.fs` endpoint, reachable via
+        // `sb --verbose page read <name> --remote` with no sync involved.
+        log_etag_outcome(resp.headers(), name);
         resp.text().await.map_err(|e| SbError::HttpStatus {
             status: status.as_u16(),
             url,
@@ -222,8 +299,14 @@ impl SbClient {
 
     /// GET `/.fs/<path>` — download raw file content.
     ///
+    /// Returns the bytes plus the server's `ETag` for that content, or `None`
+    /// when the server does not send one (SilverBullet <= 2.10.0). The ETag is a
+    /// SHA-256 digest chosen by the server — it is NOT the blake3 hash the sync
+    /// engine computes locally, and the two must never be compared or assigned
+    /// to each other.
+    ///
     /// Returns `SbError::PageNotFound` on 404.
-    pub async fn get_file(&self, path: &str) -> SbResult<Bytes> {
+    pub async fn get_file(&self, path: &str) -> SbResult<(Bytes, Option<String>)> {
         let url = format!("{}/.fs/{}", self.base_url, encode_path(path));
         let resp = self.send_with_retry(&url, || self.inner.get(&url)).await?;
         if resp.status() == StatusCode::NOT_FOUND {
@@ -233,11 +316,17 @@ impl SbClient {
         }
         let resp = Self::check_response(resp, &url).await?;
         let status = resp.status();
-        resp.bytes().await.map_err(|e| SbError::HttpStatus {
+        let etag = etag_from_headers(resp.headers());
+        // Whether conditional writes are in play is not discoverable from the
+        // server's config, and every ETag path degrades silently when they are
+        // not. Log what we saw so `--verbose` can answer it without a capture.
+        log_etag_outcome(resp.headers(), path);
+        let bytes = resp.bytes().await.map_err(|e| SbError::HttpStatus {
             status: status.as_u16(),
             url,
             body: format!("failed to read file content: {e}"),
-        })
+        })?;
+        Ok((bytes, etag))
     }
 
     /// GET `/.fs/<path>` with `X-Get-Meta: true` — fetch only file metadata.
@@ -269,7 +358,21 @@ impl SbClient {
     ///
     /// Sets `Content-Type: text/markdown` for `.md` files,
     /// `application/octet-stream` otherwise.
-    pub async fn put_file(&self, path: &str, content: bytes::Bytes) -> SbResult<()> {
+    ///
+    /// When `if_match` is `Some`, sends it as an `If-Match` header so the server
+    /// rejects the write with 412 (`SbError::PreconditionFailed`) if its copy
+    /// changed since we last saw that ETag. Pass `None` for an unconditional
+    /// last-write-wins PUT — which is what happens against a server that never
+    /// gave us an ETag.
+    ///
+    /// Returns the ETag of the newly stored content, or `None` if the server did
+    /// not send one.
+    pub async fn put_file(
+        &self,
+        path: &str,
+        content: bytes::Bytes,
+        if_match: Option<&str>,
+    ) -> SbResult<Option<String>> {
         let url = format!("{}/.fs/{}", self.base_url, encode_path(path));
         let content_type = if path.ends_with(".md") {
             "text/markdown"
@@ -277,31 +380,53 @@ impl SbClient {
             "application/octet-stream"
         };
         let resp = self
-            .send_with_retry(&url, || {
-                self.inner
-                    .put(&url)
-                    .header(header::CONTENT_TYPE, content_type)
-                    .body(content.clone())
-            })
+            .send_retrying(
+                &url,
+                || {
+                    let req = self
+                        .inner
+                        .put(&url)
+                        .header(header::CONTENT_TYPE, content_type)
+                        .body(content.clone());
+                    match if_match {
+                        Some(etag) => req.header(header::IF_MATCH, etag),
+                        None => req,
+                    }
+                },
+                if_match.is_none(),
+            )
             .await?;
-        Self::check_response(resp, &url).await?;
-        Ok(())
+        let resp = Self::check_response_write(resp, &url).await?;
+        Ok(etag_from_headers(resp.headers()))
     }
 
     /// DELETE `/.fs/<path>` — delete a file from the server.
     ///
     /// Returns `SbError::PageNotFound` on 404.
-    pub async fn delete_file(&self, path: &str) -> SbResult<()> {
+    /// When `if_match` is `Some`, sends it as an `If-Match` header so a server
+    /// whose copy changed answers 412 (`SbError::PreconditionFailed`) instead of
+    /// deleting a version we have never seen.
+    pub async fn delete_file(&self, path: &str, if_match: Option<&str>) -> SbResult<()> {
         let url = format!("{}/.fs/{}", self.base_url, encode_path(path));
         let resp = self
-            .send_with_retry(&url, || self.inner.delete(&url))
+            .send_retrying(
+                &url,
+                || {
+                    let req = self.inner.delete(&url);
+                    match if_match {
+                        Some(etag) => req.header(header::IF_MATCH, etag),
+                        None => req,
+                    }
+                },
+                if_match.is_none(),
+            )
             .await?;
         if resp.status() == StatusCode::NOT_FOUND {
             return Err(SbError::PageNotFound {
                 name: path.to_string(),
             });
         }
-        Self::check_response(resp, &url).await?;
+        Self::check_response_write(resp, &url).await?;
         Ok(())
     }
 
@@ -310,16 +435,47 @@ impl SbClient {
     /// The `endpoint` is a path like `/.runtime/lua` (NOT a full URL).
     /// Returns the raw Response so callers can inspect status and body.
     /// Uses `send_with_retry` internally for timeout resilience.
+    ///
+    /// Sends `X-Timeout`, which the Runtime API honors for its Lua endpoints,
+    /// so the server gives up at the same moment reqwest does rather than one
+    /// silently racing the other.
     pub async fn post_text(&self, endpoint: &str, body: &str) -> SbResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, endpoint);
         let body_bytes = bytes::Bytes::from(body.to_string());
+        let timeout = timeout_secs();
         self.send_with_retry(&url, || {
             self.inner
                 .post(&url)
                 .header(header::CONTENT_TYPE, "text/plain")
+                .header("X-Timeout", timeout)
                 .body(body_bytes.clone())
         })
         .await
+    }
+
+    /// POST `<endpoint>` with a `text/plain` body, WITHOUT the 5xx retry.
+    ///
+    /// `send_with_retry` treats every 5xx as transient and, after exhausting its
+    /// backoff, discards the response body. That is wrong for the Runtime API,
+    /// whose failures are deterministic and describe themselves in the body: a
+    /// Lua error is a 500 carrying `{"error":..., "code":"script_error"}`, and
+    /// retrying it four times over seven seconds only turns a precise message
+    /// ("attempt to index a nil value") into a bare "server returned 500".
+    ///
+    /// Callers that need the error envelope use this and classify it themselves.
+    pub async fn post_text_once(&self, endpoint: &str, body: &str) -> SbResult<reqwest::Response> {
+        let url = format!("{}{}", self.base_url, endpoint);
+        self.inner
+            .post(&url)
+            .header(header::CONTENT_TYPE, "text/plain")
+            .header("X-Timeout", timeout_secs())
+            .body(bytes::Bytes::from(body.to_string()))
+            .send()
+            .await
+            .map_err(|e| SbError::Network {
+                url,
+                source: Box::new(e),
+            })
     }
 
     /// POST `<endpoint>` with a JSON body (e.g., "/.shell").
@@ -347,11 +503,26 @@ impl SbClient {
 
     /// GET `/.runtime/logs` — fetch buffered client and server logs.
     ///
+    /// `limit` caps the number of entries the server returns (server default
+    /// 100, retains up to 1000). `since` is a unix millisecond timestamp;
+    /// only entries newer than it are returned. Passing `since: None` omits
+    /// the parameter entirely, which the server treats as "include every
+    /// entry, including those without timestamps" -- distinct from any
+    /// concrete value.
+    ///
     /// Returns `RuntimeLogs` with parsed `client_logs` and `server_logs`.
     /// Returns `SbError::HttpStatus { status: 503, .. }` when the Runtime API
     /// is not running so callers can map it to a friendlier message.
-    pub async fn get_runtime_logs(&self) -> SbResult<RuntimeLogs> {
-        let url = format!("{}/.runtime/logs", self.base_url);
+    pub async fn get_runtime_logs(
+        &self,
+        limit: Option<usize>,
+        since: Option<i64>,
+    ) -> SbResult<RuntimeLogs> {
+        let url = format!(
+            "{}/.runtime/logs{}",
+            self.base_url,
+            runtime_logs_query_string(limit, since)
+        );
         let resp = self.send_with_retry(&url, || self.inner.get(&url)).await?;
         if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
             return Err(SbError::HttpStatus {
@@ -433,7 +604,26 @@ impl SbClient {
         url: &str,
         build: impl Fn() -> reqwest::RequestBuilder,
     ) -> SbResult<reqwest::Response> {
-        let max_retries = 3u32;
+        self.send_retrying(url, build, true).await
+    }
+
+    /// `send_with_retry`, but `retry: false` sends exactly once.
+    ///
+    /// A conditional write must not be replayed. If a `PUT ... If-Match` times
+    /// out client-side the server may already have applied it, and the retry
+    /// carries the now-stale `If-Match`, which a conditional-write server
+    /// answers 412. That turns one slow request into a fabricated conflict and
+    /// a stash file for a write that actually succeeded. The same reasoning
+    /// covers a 5xx from an intermediary, which can equally sit in front of a
+    /// write that landed. Failing the push is honest and self-corrects on the
+    /// next sync.
+    async fn send_retrying(
+        &self,
+        url: &str,
+        build: impl Fn() -> reqwest::RequestBuilder,
+        retry: bool,
+    ) -> SbResult<reqwest::Response> {
+        let max_retries = if retry { 3u32 } else { 0 };
         let mut last_err: Option<SbError> = None;
         for attempt in 0..=max_retries {
             if attempt > 0 {
@@ -479,16 +669,32 @@ impl SbClient {
 
     /// Check a response's status, consuming it on error and returning it on success.
     ///
-    /// On 401/403, returns `SbError::AuthFailed`.
+    /// On 401, returns `SbError::AuthFailed`; on 403, `SbError::ReadOnly`;
+    /// on 412, `SbError::PreconditionFailed`.
     /// On any other non-2xx, reads the body and returns `SbError::HttpStatus`.
     /// On 2xx, returns the response so the caller can read its body.
     async fn check_response(resp: reqwest::Response, url: &str) -> SbResult<reqwest::Response> {
+        Self::check_response_inner(resp, url, false).await
+    }
+
+    /// `check_response` for a request that WRITES (PUT/DELETE), where a 403
+    /// genuinely means the path is read-only rather than the caller being
+    /// unauthenticated. See `status_error`.
+    async fn check_response_write(
+        resp: reqwest::Response,
+        url: &str,
+    ) -> SbResult<reqwest::Response> {
+        Self::check_response_inner(resp, url, true).await
+    }
+
+    async fn check_response_inner(
+        resp: reqwest::Response,
+        url: &str,
+        write: bool,
+    ) -> SbResult<reqwest::Response> {
         let status = resp.status();
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(SbError::AuthFailed {
-                url: url.to_string(),
-                status: status.as_u16(),
-            });
+        if let Some(err) = status_error(status, url, write) {
+            return Err(err);
         }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
@@ -503,11 +709,8 @@ impl SbClient {
 
     /// Map an HTTP status to `SbError`. Used internally after sending requests.
     fn check_status(&self, status: StatusCode, url: &str) -> SbResult<()> {
-        if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(SbError::AuthFailed {
-                url: url.to_string(),
-                status: status.as_u16(),
-            });
+        if let Some(err) = status_error(status, url, false) {
+            return Err(err);
         }
         if !status.is_success() {
             return Err(SbError::HttpStatus {
@@ -518,17 +721,253 @@ impl SbClient {
         }
         Ok(())
     }
+
+    /// Map a 404 from a `/.revisions` endpoint to `SbError`.
+    ///
+    /// Every `/.revisions` endpoint answers 404 identically when revisions
+    /// are disabled for the space, with body `{"error": "revisions
+    /// disabled"}`. That is distinguished here from an ordinary not-found
+    /// (unknown path) by sniffing the body, so callers get the friendly
+    /// message instead of a bare 404.
+    fn revisions_disabled_or_http_status(url: &str, body: String) -> SbError {
+        if body.contains("revisions disabled") {
+            SbError::RevisionsDisabled
+        } else {
+            SbError::HttpStatus {
+                status: 404,
+                url: url.to_string(),
+                body,
+            }
+        }
+    }
+
+    /// GET `/.revisions/<path>` -- a single file's git-backed revision history.
+    ///
+    /// `before` pages backward from that revision hash; `limit` is clamped
+    /// server-side to 200. Returns `SbError::RevisionsDisabled` when the space
+    /// has revisions turned off. An enabled-but-empty history (e.g. an
+    /// unmanaged space that has never been snapshotted) is a normal `Ok` with
+    /// an empty `revisions` vec, not an error.
+    pub async fn get_file_revisions(
+        &self,
+        path: &str,
+        before: Option<&str>,
+        limit: usize,
+    ) -> SbResult<FileRevisions> {
+        let url = format!("{}/.revisions/{}", self.base_url, encode_path(path));
+        let limit_str = limit.to_string();
+        let before_owned = before.map(|s| s.to_string());
+        let resp = self
+            .send_with_retry(&url, || {
+                let mut query = vec![("limit", limit_str.as_str())];
+                if let Some(b) = before_owned.as_deref() {
+                    query.push(("before", b));
+                }
+                self.inner.get(&url).query(&query)
+            })
+            .await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::revisions_disabled_or_http_status(&url, body));
+        }
+        let resp = Self::check_response(resp, &url).await?;
+        let status = resp.status();
+        resp.json::<FileRevisions>()
+            .await
+            .map_err(|e| SbError::HttpStatus {
+                status: status.as_u16(),
+                url,
+                body: format!("failed to parse revision history: {e}"),
+            })
+    }
+
+    /// GET `/.revisions/<path>?format=diff[&rev=<hash>]` -- a unified diff.
+    ///
+    /// With `rev` set, the diff is what that revision changed versus its
+    /// parent. With `rev` omitted, it is the uncommitted change: HEAD versus
+    /// what is on disk.
+    ///
+    /// Returns `Ok(None)` for the two documented "nothing to diff" 404s --
+    /// a revision with no parent to diff against (a merge commit), and an
+    /// uncommitted diff that turns out to match HEAD after all -- neither of
+    /// which is an error condition. Returns `SbError::RevisionsDisabled` when
+    /// revisions are off for the space.
+    pub async fn get_revision_diff(
+        &self,
+        path: &str,
+        rev: Option<&str>,
+    ) -> SbResult<Option<String>> {
+        let url = format!("{}/.revisions/{}", self.base_url, encode_path(path));
+        let rev_owned = rev.map(|s| s.to_string());
+        let resp = self
+            .send_with_retry(&url, || {
+                let mut query = vec![("format", "diff")];
+                if let Some(r) = rev_owned.as_deref() {
+                    query.push(("rev", r));
+                }
+                self.inner.get(&url).query(&query)
+            })
+            .await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            let body = resp.text().await.unwrap_or_default();
+            if body.contains("revisions disabled") {
+                return Err(SbError::RevisionsDisabled);
+            }
+            return Ok(None);
+        }
+        let resp = Self::check_response(resp, &url).await?;
+        let status = resp.status();
+        resp.text()
+            .await
+            .map(Some)
+            .map_err(|e| SbError::HttpStatus {
+                status: status.as_u16(),
+                url,
+                body: format!("failed to read diff body: {e}"),
+            })
+    }
+
+    /// GET `/.revisions/<path>?rev=<hash>` -- a file's content as of that
+    /// revision, served with the file's own content type.
+    ///
+    /// Returns `SbError::RevisionsDisabled` when revisions are off for the
+    /// space. A 404 for an unknown revision (or a path that did not exist at
+    /// it) surfaces as `SbError::HttpStatus`.
+    pub async fn get_revision_content(&self, path: &str, rev: &str) -> SbResult<Bytes> {
+        let url = format!("{}/.revisions/{}", self.base_url, encode_path(path));
+        let rev = rev.to_string();
+        let resp = self
+            .send_with_retry(&url, || {
+                self.inner.get(&url).query(&[("rev", rev.as_str())])
+            })
+            .await?;
+        if resp.status() == StatusCode::NOT_FOUND {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(Self::revisions_disabled_or_http_status(&url, body));
+        }
+        let resp = Self::check_response(resp, &url).await?;
+        let status = resp.status();
+        resp.bytes().await.map_err(|e| SbError::HttpStatus {
+            status: status.as_u16(),
+            url,
+            body: format!("failed to read revision content: {e}"),
+        })
+    }
+}
+
+/// Map the HTTP statuses that carry a specific meaning to their `SbError`.
+///
+/// 401 is a real authentication failure. 403 is NOT: since SilverBullet 2.10.0
+/// it means the path is read-only (a bundled `Library/Std` page, or a server run
+/// with `SB_READ_ONLY`), which no amount of re-authenticating will fix.
+/// 412 is a rejected `If-Match` conditional write.
+/// Returns `None` for every other status, success included.
+fn status_error(status: StatusCode, url: &str, write: bool) -> Option<SbError> {
+    match status {
+        StatusCode::UNAUTHORIZED => Some(SbError::AuthFailed {
+            url: url.to_string(),
+            status: status.as_u16(),
+        }),
+        // Only a refused WRITE means "this path is read-only". 403 is not
+        // exclusively SilverBullet's: an auth proxy in front of it (oauth2-proxy,
+        // Authelia, Cloudflare Access) answers 403 for a rejected identity, and
+        // telling that user "your token is fine" sends them the wrong way. On a
+        // read, treat it as the auth failure it almost certainly is.
+        StatusCode::FORBIDDEN if write => Some(SbError::ReadOnly {
+            url: url.to_string(),
+        }),
+        StatusCode::FORBIDDEN => Some(SbError::AuthFailed {
+            url: url.to_string(),
+            status: status.as_u16(),
+        }),
+        StatusCode::PRECONDITION_FAILED => Some(SbError::PreconditionFailed {
+            url: url.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// Extract a reusable `ETag` from a response's headers.
+///
+/// The value is kept verbatim (quotes included) so it can be echoed straight
+/// back in `If-Match` without re-quoting. Returns `None` when the header is
+/// absent (any SilverBullet without conditional writes), empty, not valid
+/// ASCII, or a weak validator (`W/"..."`), which HTTP forbids in `If-Match`.
+///
+/// Whatever comes back is the server's own digest (`"sha256:<hex>"` today). It is
+/// never interchangeable with the blake3 `local_hash`/`remote_hash` the sync
+/// engine computes.
+fn etag_from_headers(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get(header::ETAG)?.to_str().ok()?.trim();
+    if raw.is_empty() || raw.starts_with("W/") {
+        return None;
+    }
+    Some(raw.to_string())
+}
+
+/// Log why conditional writes are or are not in play for this response.
+///
+/// Deliberately distinguishes "no `ETag` at all" from "an `ETag` we refused",
+/// because the two have completely different fixes and collapsing them into one
+/// message sent this author chasing a server-version problem that did not
+/// exist. A CDN that rewrites `ETag: "x"` into `ETag: W/"x"` (Cloudflare does
+/// this to any response it might transform) looks identical to a server with no
+/// conditional-write support unless the message says which happened.
+fn log_etag_outcome(headers: &HeaderMap, path: &str) {
+    match headers.get(header::ETAG).and_then(|v| v.to_str().ok()) {
+        Some(raw) if raw.trim().starts_with("W/") => tracing::debug!(
+            path,
+            etag = %raw.trim(),
+            "server sent a WEAK ETag; refusing it for If-Match (RFC 9110 requires \
+             strong comparison). Something between here and the origin weakened it \
+             -- conditional writes are off until that stops"
+        ),
+        Some(raw) if raw.trim().is_empty() => {
+            tracing::debug!(
+                path,
+                "server sent an empty ETag; conditional writes are off"
+            )
+        }
+        Some(raw) => tracing::debug!(path, etag = %raw.trim(), "server sent a strong ETag"),
+        None => tracing::debug!(path, "server sent no ETag; conditional writes are off"),
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use wiremock::matchers::{header, method, path};
+    use wiremock::matchers::{header, method, path, query_param, query_param_is_missing};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     // Helper: build a client pointing at the wiremock server
     fn make_client(base_url: &str, token: &str) -> SbClient {
         SbClient::new(base_url, token).expect("SbClient::new should succeed")
+    }
+
+    /// A weak validator must never reach `If-Match`: RFC 9110 requires strong
+    /// comparison there, and a CDN that rewrites `"x"` to `W/"x"` is asserting
+    /// the body may have been transformed. Accepting it would make a
+    /// conditional write match content that is not byte-identical, which is the
+    /// exact guarantee the feature exists to provide.
+    #[test]
+    fn a_weak_etag_is_refused_for_conditional_writes() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::ETAG,
+            HeaderValue::from_static("W/\"sha256:deadbeef\""),
+        );
+        assert_eq!(etag_from_headers(&h), None);
+
+        // ...while the same tag unweakened is accepted verbatim, quotes and all.
+        let mut h = HeaderMap::new();
+        h.insert(
+            header::ETAG,
+            HeaderValue::from_static("\"sha256:deadbeef\""),
+        );
+        assert_eq!(
+            etag_from_headers(&h),
+            Some("\"sha256:deadbeef\"".to_string())
+        );
     }
 
     // --- list_files tests ---
@@ -607,7 +1046,7 @@ mod tests {
         let client = make_client(&server.uri(), "testtoken");
         let result = client.get_file("notes/page.md").await;
         assert!(result.is_ok(), "get_file should succeed: {result:?}");
-        let bytes = result.unwrap();
+        let (bytes, _etag) = result.unwrap();
         let text = std::str::from_utf8(&bytes).expect("valid utf8");
         assert!(text.contains("My Page"));
     }
@@ -698,7 +1137,7 @@ mod tests {
         let client = make_client(&server.uri(), "testtoken");
         let content = b"# My Page\n\nContent.".to_vec();
         let result = client
-            .put_file("notes/page.md", bytes::Bytes::from(content))
+            .put_file("notes/page.md", bytes::Bytes::from(content), None)
             .await;
         assert!(result.is_ok(), "put_file should succeed: {result:?}");
     }
@@ -717,7 +1156,7 @@ mod tests {
         let client = make_client(&server.uri(), "testtoken");
         let content = b"# My Page".to_vec();
         client
-            .put_file("notes/page.md", bytes::Bytes::from(content))
+            .put_file("notes/page.md", bytes::Bytes::from(content), None)
             .await
             .expect("put_file should succeed with markdown content-type");
     }
@@ -734,7 +1173,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri(), "testtoken");
-        let result = client.delete_file("notes/page.md").await;
+        let result = client.delete_file("notes/page.md", None).await;
         assert!(result.is_ok(), "delete_file should succeed: {result:?}");
     }
 
@@ -748,7 +1187,7 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri(), "testtoken");
-        let result = client.delete_file("missing.md").await;
+        let result = client.delete_file("missing.md", None).await;
         assert!(result.is_err());
         match result.unwrap_err() {
             SbError::PageNotFound { name } => assert_eq!(name, "missing.md"),
@@ -893,8 +1332,73 @@ mod tests {
         }
     }
 
+    /// A conditional write is sent exactly once. Replaying it would carry a
+    /// stale `If-Match` past a write that may already have landed, and the 412
+    /// that follows fabricates a conflict (and a stash file) for a PUT that
+    /// actually succeeded.
     #[tokio::test]
-    async fn request_returning_403_produces_auth_failed() {
+    async fn a_conditional_put_is_never_replayed() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/note.md"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "t");
+        let _ = client
+            .put_file("note.md", Bytes::from_static(b"x"), Some("\"sha256:abc\""))
+            .await;
+        // Mock::expect is verified on drop.
+    }
+
+    /// The unconditional path keeps its retry: with nothing to go stale, a
+    /// transient 5xx is worth another attempt.
+    #[tokio::test]
+    async fn an_unconditional_put_still_retries() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/note.md"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(4) // initial attempt plus three retries
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "t");
+        let _ = client
+            .put_file("note.md", Bytes::from_static(b"x"), None)
+            .await;
+    }
+
+    /// A refused WRITE is a read-only path, not a bad token: it must NOT be
+    /// AuthFailed and must not exit 3, or agents retry auth for a problem auth
+    /// cannot fix.
+    #[tokio::test]
+    async fn a_403_on_a_write_produces_read_only_not_auth_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/Library/Std/Config.md"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "good-token");
+        let err = client
+            .put_file("Library/Std/Config.md", Bytes::from_static(b"x"), None)
+            .await
+            .unwrap_err();
+        match err {
+            SbError::ReadOnly { url } => assert!(url.contains("Library/Std/Config.md")),
+            other => panic!("expected ReadOnly, got: {other:?}"),
+        }
+    }
+
+    /// The mirror image. A 403 on a READ is not evidence of a read-only path:
+    /// an auth proxy in front of SilverBullet answers 403 for a rejected
+    /// identity, and "your token is fine" would send that user the wrong way.
+    #[tokio::test]
+    async fn a_403_on_a_read_stays_an_auth_failure() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/.config"))
@@ -902,12 +1406,28 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = make_client(&server.uri(), "bad-token");
-        let result = client.get_config().await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        let client = make_client(&server.uri(), "good-token");
+        let err = client.get_config().await.unwrap_err();
+        assert_eq!(err.exit_code(), 3, "a refused read stays exit 3 (auth)");
+        match err {
             SbError::AuthFailed { status, .. } => assert_eq!(status, 403),
             other => panic!("expected AuthFailed, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn request_returning_412_produces_precondition_failed() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.config"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        match client.get_config().await.unwrap_err() {
+            SbError::PreconditionFailed { url } => assert!(url.contains("/.config")),
+            other => panic!("expected PreconditionFailed, got: {other:?}"),
         }
     }
 
@@ -1148,7 +1668,11 @@ mod tests {
 
         let client = make_client(&server.uri(), "testtoken");
         client
-            .put_file("What is Rust?.md", bytes::Bytes::from_static(b"content"))
+            .put_file(
+                "What is Rust?.md",
+                bytes::Bytes::from_static(b"content"),
+                None,
+            )
             .await
             .expect("put_file should succeed with percent-encoded path");
     }
@@ -1269,7 +1793,7 @@ mod tests {
 
         let client = make_client(&server.uri(), "testtoken");
         let logs = client
-            .get_runtime_logs()
+            .get_runtime_logs(None, None)
             .await
             .expect("get_runtime_logs should succeed");
         assert_eq!(logs.client_logs.len(), 1);
@@ -1292,7 +1816,7 @@ mod tests {
 
         let client = make_client(&server.uri(), "testtoken");
         let err = client
-            .get_runtime_logs()
+            .get_runtime_logs(None, None)
             .await
             .expect_err("503 should error");
         match err {
@@ -1312,11 +1836,92 @@ mod tests {
 
         let client = make_client(&server.uri(), "testtoken");
         let logs = client
-            .get_runtime_logs()
+            .get_runtime_logs(None, None)
             .await
             .expect("empty payload should deserialize to empty vecs");
         assert!(logs.client_logs.is_empty());
         assert!(logs.server_logs.is_empty());
+    }
+
+    // --- runtime_logs_query_string (pure logic) ---
+
+    #[test]
+    fn runtime_logs_query_string_empty_when_both_none() {
+        assert_eq!(runtime_logs_query_string(None, None), "");
+    }
+
+    #[test]
+    fn runtime_logs_query_string_sends_limit_only() {
+        assert_eq!(runtime_logs_query_string(Some(50), None), "?limit=50");
+    }
+
+    #[test]
+    fn runtime_logs_query_string_sends_since_only() {
+        assert_eq!(
+            runtime_logs_query_string(None, Some(1700000000000)),
+            "?since=1700000000000"
+        );
+    }
+
+    #[test]
+    fn runtime_logs_query_string_sends_both() {
+        assert_eq!(
+            runtime_logs_query_string(Some(50), Some(123)),
+            "?limit=50&since=123"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_sends_limit_as_query_param() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .and(query_param("limit", "20"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .get_runtime_logs(Some(20), None)
+            .await
+            .expect("mock only matches the request carrying limit=20");
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_first_poll_omits_since() {
+        let server = MockServer::start().await;
+        // Constraining the mock on the missing param IS the assertion: a request
+        // carrying `since` at all would 404 against this mock.
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .and(query_param_is_missing("since"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .get_runtime_logs(None, None)
+            .await
+            .expect("first poll must not send since");
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_sends_since_once_high_water_known() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .and(query_param("since", "1700000000000"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .get_runtime_logs(None, Some(1700000000000))
+            .await
+            .expect("mock only matches the request carrying since");
     }
 
     // --- get_runtime_screenshot tests ---
@@ -1385,5 +1990,454 @@ mod tests {
         );
         assert_eq!(result.unwrap().status().as_u16(), 401);
         // MockServer verifies expect(1) on drop
+    }
+
+    // --- get_file_revisions tests ---
+
+    #[tokio::test]
+    async fn get_file_revisions_renders_an_enabled_but_empty_history() {
+        // Mirrors the real target server: mode "unmanaged", no commits yet.
+        // "enabled but empty" must come back Ok, not an error.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.revisions/index.md"))
+            .and(query_param("limit", "50"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"mode":"unmanaged","more":false,"revisions":[],"uncommitted":true}"#,
+            ))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let history = client
+            .get_file_revisions("index.md", None, 50)
+            .await
+            .expect("empty-but-enabled history should be Ok");
+        assert_eq!(history.mode, "unmanaged");
+        assert!(history.revisions.is_empty());
+        assert!(history.uncommitted);
+        assert!(!history.more);
+    }
+
+    #[tokio::test]
+    async fn get_file_revisions_parses_revision_list_and_sends_before_param() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .and(query_param("limit", "10"))
+            .and(query_param("before", "a".repeat(40)))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{"mode":"managed","uncommitted":false,"more":true,"revisions":[{{"rev":"{}","timestamp":1700000000000,"author":"alice","message":"edit","added":1,"removed":0}}]}}"#,
+                "b".repeat(40)
+            )))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let history = client
+            .get_file_revisions("note.md", Some(&"a".repeat(40)), 10)
+            .await
+            .expect("history should parse");
+        assert_eq!(history.revisions.len(), 1);
+        assert_eq!(history.revisions[0].rev, "b".repeat(40));
+        assert_eq!(history.revisions[0].author, "alice");
+        assert!(history.more);
+    }
+
+    #[tokio::test]
+    async fn get_file_revisions_maps_disabled_body_to_revisions_disabled_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_string(r#"{"error": "revisions disabled"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .get_file_revisions("note.md", None, 50)
+            .await
+            .expect_err("disabled body should error");
+        assert!(matches!(err, SbError::RevisionsDisabled));
+    }
+
+    #[tokio::test]
+    async fn get_file_revisions_plain_404_is_http_status_not_disabled() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("no repository"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .get_file_revisions("note.md", None, 50)
+            .await
+            .expect_err("plain 404 should error");
+        match err {
+            SbError::HttpStatus { status, .. } => assert_eq!(status, 404),
+            other => panic!("expected HttpStatus(404), got: {other:?}"),
+        }
+    }
+
+    // --- get_revision_diff tests ---
+
+    #[tokio::test]
+    async fn get_revision_diff_with_rev_sends_rev_and_format_params() {
+        let server = MockServer::start().await;
+        let rev = "c".repeat(40);
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .and(query_param("format", "diff"))
+            .and(query_param("rev", rev.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_string("@@ -1 +1 @@\n-a\n+b\n"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let diff = client
+            .get_revision_diff("note.md", Some(&rev))
+            .await
+            .expect("diff should succeed")
+            .expect("diff should be Some");
+        assert!(diff.contains("@@"));
+    }
+
+    #[tokio::test]
+    async fn get_revision_diff_without_rev_omits_rev_param() {
+        let server = MockServer::start().await;
+        // Constraining the mock to format=diff with no rev param IS the
+        // assertion that the uncommitted-diff path omits `rev`.
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .and(query_param("format", "diff"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("+uncommitted\n"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let diff = client
+            .get_revision_diff("note.md", None)
+            .await
+            .expect("diff should succeed")
+            .expect("diff should be Some");
+        assert!(diff.contains("uncommitted"));
+    }
+
+    #[tokio::test]
+    async fn get_revision_diff_404_with_empty_body_is_ok_none() {
+        // Nothing to diff (matches HEAD, or a root/merge commit) -- not an error.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let diff = client
+            .get_revision_diff("note.md", None)
+            .await
+            .expect("a benign 404 should not be an Err");
+        assert!(diff.is_none());
+    }
+
+    #[tokio::test]
+    async fn get_revision_diff_disabled_body_is_revisions_disabled_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .respond_with(
+                ResponseTemplate::new(404).set_body_string(r#"{"error": "revisions disabled"}"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .get_revision_diff("note.md", None)
+            .await
+            .expect_err("disabled body should error even for diff");
+        assert!(matches!(err, SbError::RevisionsDisabled));
+    }
+
+    // --- get_revision_content tests ---
+
+    #[tokio::test]
+    async fn get_revision_content_sends_rev_param_and_returns_bytes() {
+        let server = MockServer::start().await;
+        let rev = "d".repeat(40);
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .and(query_param("rev", rev.clone()))
+            .respond_with(ResponseTemplate::new(200).set_body_string("old content"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let bytes = client
+            .get_revision_content("note.md", &rev)
+            .await
+            .expect("content fetch should succeed");
+        assert_eq!(&bytes[..], b"old content");
+    }
+
+    #[tokio::test]
+    async fn get_revision_content_unknown_rev_is_http_status_404() {
+        let server = MockServer::start().await;
+        let rev = "e".repeat(40);
+        Mock::given(method("GET"))
+            .and(path("/.revisions/note.md"))
+            .and(query_param("rev", rev.clone()))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .get_revision_content("note.md", &rev)
+            .await
+            .expect_err("unknown rev should error");
+        match err {
+            SbError::HttpStatus { status, .. } => assert_eq!(status, 404),
+            other => panic!("expected HttpStatus(404), got: {other:?}"),
+        }
+    }
+
+    // --- ETag / conditional writes ---
+
+    fn headers_with(name: &str, value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(
+            reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            HeaderValue::from_str(value).unwrap(),
+        );
+        h
+    }
+
+    #[test]
+    fn etag_is_taken_verbatim_so_it_can_be_echoed_back() {
+        let h = headers_with("ETag", "\"sha256:deadbeef\"");
+        assert_eq!(
+            etag_from_headers(&h),
+            Some("\"sha256:deadbeef\"".to_string()),
+            "quotes are part of the validator and must survive the round trip"
+        );
+    }
+
+    #[test]
+    fn missing_etag_header_yields_none() {
+        // The 2.10.0 server: no ETag, so nothing to send back as If-Match.
+        assert_eq!(etag_from_headers(&HeaderMap::new()), None);
+    }
+
+    #[test]
+    fn empty_and_weak_etags_are_rejected() {
+        assert_eq!(etag_from_headers(&headers_with("ETag", "")), None);
+        assert_eq!(
+            etag_from_headers(&headers_with("ETag", "W/\"sha256:abc\"")),
+            None,
+            "a weak validator is not usable in If-Match"
+        );
+    }
+
+    /// A 403 means "read-only path" only when we were writing. On a read it is
+    /// almost certainly an auth proxy rejecting the identity, and reporting
+    /// "your token is fine" would send the user the wrong way.
+    #[test]
+    fn a_403_is_read_only_only_for_writes() {
+        let url = "http://localhost:3000/.fs/page.md";
+        assert!(matches!(
+            status_error(StatusCode::FORBIDDEN, url, true),
+            Some(SbError::ReadOnly { .. })
+        ));
+        assert!(matches!(
+            status_error(StatusCode::FORBIDDEN, url, false),
+            Some(SbError::AuthFailed { status: 403, .. })
+        ));
+        // The read mapping keeps the auth exit code a caller can branch on.
+        assert_eq!(
+            status_error(StatusCode::FORBIDDEN, url, false)
+                .unwrap()
+                .exit_code(),
+            3
+        );
+    }
+
+    #[test]
+    fn status_error_maps_401_403_412_and_nothing_else() {
+        let url = "http://localhost:3000/.fs/page.md";
+        assert!(matches!(
+            status_error(StatusCode::UNAUTHORIZED, url, true),
+            Some(SbError::AuthFailed { status: 401, .. })
+        ));
+        assert!(matches!(
+            status_error(StatusCode::FORBIDDEN, url, true),
+            Some(SbError::ReadOnly { .. })
+        ));
+        assert!(matches!(
+            status_error(StatusCode::PRECONDITION_FAILED, url, true),
+            Some(SbError::PreconditionFailed { .. })
+        ));
+        for other in [
+            StatusCode::OK,
+            StatusCode::NOT_FOUND,
+            StatusCode::CONFLICT,
+            StatusCode::INTERNAL_SERVER_ERROR,
+        ] {
+            assert!(
+                status_error(other, url, true).is_none(),
+                "{other} should not map"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn get_file_returns_the_servers_etag_alongside_the_bytes() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.fs/notes/page.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string("# Page")
+                    .insert_header("ETag", "\"sha256:abc123\""),
+            )
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let (bytes, etag) = client.get_file("notes/page.md").await.expect("get_file");
+        assert_eq!(&bytes[..], b"# Page");
+        assert_eq!(etag, Some("\"sha256:abc123\"".to_string()));
+    }
+
+    #[tokio::test]
+    async fn get_file_returns_no_etag_from_a_server_that_sends_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.fs/notes/page.md"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("# Page"))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let (_bytes, etag) = client.get_file("notes/page.md").await.expect("get_file");
+        assert_eq!(etag, None);
+    }
+
+    #[tokio::test]
+    async fn put_file_sends_if_match_when_given_one() {
+        let server = MockServer::start().await;
+        // Only a PUT carrying this exact If-Match matches; anything else 404s.
+        Mock::given(method("PUT"))
+            .and(path("/.fs/page.md"))
+            .and(header("If-Match", "\"sha256:old\""))
+            .respond_with(ResponseTemplate::new(200).insert_header("ETag", "\"sha256:new\""))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let new_etag = client
+            .put_file(
+                "page.md",
+                bytes::Bytes::from_static(b"hi"),
+                Some("\"sha256:old\""),
+            )
+            .await
+            .expect("conditional put should succeed");
+        assert_eq!(new_etag, Some("\"sha256:new\"".to_string()));
+    }
+
+    #[tokio::test]
+    async fn put_file_sends_no_if_match_when_none() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/page.md"))
+            .and(wiremock::matchers::header_exists("Content-Type"))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+        // Any request that did carry an If-Match would match this instead.
+        Mock::given(method("PUT"))
+            .and(path("/.fs/page.md"))
+            .and(wiremock::matchers::header_exists("If-Match"))
+            .respond_with(ResponseTemplate::new(500))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let etag = client
+            .put_file("page.md", bytes::Bytes::from_static(b"hi"), None)
+            .await
+            .expect("unconditional put should succeed");
+        assert_eq!(etag, None, "server sent no ETag, so we store none");
+    }
+
+    #[tokio::test]
+    async fn put_file_returns_precondition_failed_on_412() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/page.md"))
+            .respond_with(ResponseTemplate::new(412))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .put_file(
+                "page.md",
+                bytes::Bytes::from_static(b"hi"),
+                Some("\"sha256:stale\""),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SbError::PreconditionFailed { .. }));
+        assert_eq!(err.exit_code(), 5, "412 is a conflict");
+    }
+
+    #[tokio::test]
+    async fn put_file_returns_read_only_on_403() {
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/Library/Std/page.md"))
+            .respond_with(ResponseTemplate::new(403))
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .put_file(
+                "Library/Std/page.md",
+                bytes::Bytes::from_static(b"hi"),
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SbError::ReadOnly { .. }));
+        assert_ne!(err.exit_code(), 3, "read-only is not an auth failure");
+    }
+
+    #[tokio::test]
+    async fn delete_file_sends_if_match_when_given_one() {
+        let server = MockServer::start().await;
+        Mock::given(method("DELETE"))
+            .and(path("/.fs/page.md"))
+            .and(header("If-Match", "\"sha256:known\""))
+            .respond_with(ResponseTemplate::new(200))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .delete_file("page.md", Some("\"sha256:known\""))
+            .await
+            .expect("conditional delete should succeed");
     }
 }

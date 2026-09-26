@@ -1,3 +1,7 @@
 /target
 .planning/
 .claude/
+
+# uv artifacts. pyproject.toml here is commitizen config only, not a Python project.
+uv.lock
+.venv/

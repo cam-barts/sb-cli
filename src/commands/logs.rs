@@ -9,11 +9,13 @@ use jiff::Timestamp;
 /// runtime and render them. Streams pretty output when stdout is a TTY and
 /// the format is `Human`; otherwise emits newline-delimited JSON (one entry
 /// per line) so the output is easy to grep / pipe.
+#[allow(clippy::too_many_arguments)]
 pub async fn execute(
     cli_token: Option<&str>,
     follow: bool,
     interval_ms: u64,
     source: LogSource,
+    lines: Option<usize>,
     format: &OutputFormat,
     quiet: bool,
     color: bool,
@@ -23,11 +25,12 @@ pub async fn execute(
 
     // Track the last timestamp we've already printed when --follow is on
     // so the polling loop only emits new entries. `None` means "first pass --
-    // include every entry, including those without timestamps".
+    // include every entry, including those without timestamps", and is also
+    // what tells the server to omit `since` on the first request.
     let mut high_water: Option<i64> = None;
     let mut first = true;
     loop {
-        let logs = match client.get_runtime_logs().await {
+        let logs = match client.get_runtime_logs(lines, high_water).await {
             Ok(l) => l,
             Err(SbError::HttpStatus { status: 503, .. }) => {
                 return Err(runtime_unavailable_error());
@@ -265,7 +268,7 @@ mod tests {
     mod execute_tests {
         use super::super::*;
         use crate::test_util::{make_space, SbSpaceGuard};
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{method, path, query_param, query_param_is_missing};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         #[tokio::test]
@@ -283,6 +286,7 @@ mod tests {
                 false,
                 100,
                 LogSource::Both,
+                None,
                 &OutputFormat::Json,
                 true,
                 false,
@@ -309,6 +313,7 @@ mod tests {
                 false,
                 100,
                 LogSource::Both,
+                None,
                 &OutputFormat::Json,
                 true,
                 false,
@@ -335,12 +340,71 @@ mod tests {
                 false,
                 100,
                 LogSource::Both,
+                None,
                 &OutputFormat::Human,
                 false,
                 false,
             )
             .await
             .unwrap();
+        }
+
+        #[tokio::test]
+        async fn execute_first_poll_sends_no_since() {
+            let server = MockServer::start().await;
+            // Constraining the mock on the missing param IS the assertion here:
+            // a request carrying `since` would 404 and fail this test.
+            Mock::given(method("GET"))
+                .and(path("/.runtime/logs"))
+                .and(query_param_is_missing("since"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(r#"{"client_logs":[],"server_logs":[]}"#),
+                )
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute(
+                None,
+                false,
+                100,
+                LogSource::Both,
+                None,
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("first poll must omit since entirely");
+        }
+
+        #[tokio::test]
+        async fn execute_lines_maps_to_limit_query_param() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.runtime/logs"))
+                .and(query_param("limit", "5"))
+                .respond_with(
+                    ResponseTemplate::new(200)
+                        .set_body_string(r#"{"client_logs":[],"server_logs":[]}"#),
+                )
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            execute(
+                None,
+                false,
+                100,
+                LogSource::Both,
+                Some(5),
+                &OutputFormat::Json,
+                true,
+                false,
+            )
+            .await
+            .expect("-n 5 must be sent as limit=5");
         }
     }
 }

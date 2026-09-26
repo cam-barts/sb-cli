@@ -78,6 +78,11 @@ mod imp {
     struct QueryArgs {
         /// A SilverBullet index query (SLIQ) body, e.g.
         /// `from index.tag "page" order by name limit 10`.
+        ///
+        /// `index.tag "NAME"` is the only source. A bare attribute name is an
+        /// existence filter (`where zoteroKey`); `select a, b` projects fields
+        /// and returns distinct rows, so one query can build a whole lookup
+        /// table; comparison is `==`, never `=`.
         query: String,
     }
 
@@ -294,36 +299,7 @@ mod imp {
         }
         let client = build_client(None)?;
         let lua_script = format!("return query[[{}]]", query);
-        let resp = client
-            .post_text("/.runtime/lua_script", &lua_script)
-            .await?;
-        let status = resp.status();
-        if status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
-            return Err(runtime_unavailable_error());
-        }
-        let url = format!("{}/.runtime/lua_script", client.base_url());
-        let body = resp.text().await.map_err(|e| SbError::HttpStatus {
-            status: status.as_u16(),
-            url: url.clone(),
-            body: format!("failed to read response: {e}"),
-        })?;
-        let parsed: serde_json::Value =
-            serde_json::from_str(&body).map_err(|e| SbError::HttpStatus {
-                status: status.as_u16(),
-                url: url.clone(),
-                body: format!("invalid JSON response: {e}"),
-            })?;
-        if let Some(error) = parsed.get("error").and_then(|e| e.as_str()) {
-            return Err(SbError::HttpStatus {
-                status: status.as_u16(),
-                url,
-                body: format!("Query error: {error}"),
-            });
-        }
-        Ok(parsed
-            .get("result")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null))
+        crate::runtime::eval(&client, "/.runtime/lua_script", &lua_script).await
     }
 
     /// Append `text` as a formatted journal entry to today's daily note,

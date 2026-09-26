@@ -69,6 +69,32 @@ fn daily_append_creates_note_at_todays_date_path() {
     );
 }
 
+#[test]
+fn daily_sign_appends_signature_inline_on_the_same_bullet() {
+    let space = default_space();
+    let today = jiff::Zoned::now().date();
+    let expected_filename = format!("Journal/{}.md", today.strftime("%Y-%m-%d"));
+
+    sb_in(&space)
+        .args([
+            "daily",
+            "--no-time",
+            "--sign",
+            "ada",
+            "--sign",
+            "@zef",
+            "Finished the spike",
+        ])
+        .assert()
+        .success();
+
+    let content =
+        std::fs::read_to_string(space.path().join(&expected_filename)).expect("read note");
+    // A daily entry is always a list item: the signature must terminate the
+    // same bullet inline, not start a new line below it.
+    assert_eq!(content, "* Finished the spike -- @ada @zef\n");
+}
+
 /// `sb daily --yesterday --append TEXT` creates a note with yesterday's date.
 #[test]
 fn daily_append_yesterday_targets_yesterday() {

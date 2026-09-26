@@ -19,9 +19,21 @@ pub enum SbError {
         body: String,
     },
 
-    /// Authentication failure (401/403) -- to be used in Phase 2
+    /// Authentication failure (401 only) -- a 403 is `ReadOnly`, not bad credentials.
     #[error("authentication failed for {url}")]
     AuthFailed { url: String, status: u16 },
+
+    /// The server refused a write because the path is read-only (HTTP 403).
+    /// Since SilverBullet 2.10.0 a 403 means a read-only path (a bundled
+    /// `Library/Std` page, or a server started with `SB_READ_ONLY`) -- it does
+    /// NOT mean the token is wrong.
+    #[error("read-only path refused by server: {url}")]
+    ReadOnly { url: String },
+
+    /// A conditional write (`If-Match`) was rejected (HTTP 412): the server copy
+    /// changed since we last saw it, so writing would have clobbered it.
+    #[error("precondition failed for {url}: server copy changed since last sync")]
+    PreconditionFailed { url: String },
 
     /// Configuration error
     #[error("{message}")]
@@ -87,11 +99,24 @@ pub enum SbError {
     #[error("process exited with code {code}")]
     ProcessFailed { code: i32, stderr: String },
 
+    /// The Runtime API gave up before the script finished (its `timeout` code /
+    /// HTTP 504). Distinct from a transport timeout: the server answered, it
+    /// just refused to keep waiting.
+    #[error("the Runtime API timed out after {seconds}s")]
+    RuntimeTimeout { seconds: u64 },
+
     /// A destructive/ambiguous action needs explicit confirmation, but none was
     /// given and we are non-interactive (agents hit this instead of stalling on
     /// a prompt they cannot answer). Carries the exact command to re-run.
     #[error("confirmation required: {action}")]
     ConfirmationRequired { action: String, rerun: String },
+
+    /// Git-backed revision history is off for this space. The server 404s
+    /// every `/.revisions` endpoint identically with `{"error": "revisions
+    /// disabled"}`, so this is distinguished from a bare not-found rather than
+    /// surfaced as a raw 404.
+    #[error("revisions are not enabled for this space")]
+    RevisionsDisabled,
 }
 
 /// Coarse error category — the single source of truth behind both the process
@@ -122,10 +147,11 @@ impl SbError {
             SbError::AuthFailed { .. } | SbError::TokenNotFound { .. } => ErrorCategory::Auth,
             SbError::NotInitialized
             | SbError::SpaceNotFound { .. }
-            | SbError::PageNotFound { .. } => ErrorCategory::NotFound,
-            SbError::AlreadyInitialized { .. } | SbError::PageAlreadyExists { .. } => {
-                ErrorCategory::Conflict
-            }
+            | SbError::PageNotFound { .. }
+            | SbError::RevisionsDisabled => ErrorCategory::NotFound,
+            SbError::AlreadyInitialized { .. }
+            | SbError::PageAlreadyExists { .. }
+            | SbError::PreconditionFailed { .. } => ErrorCategory::Conflict,
             SbError::ConfirmationRequired { .. } => ErrorCategory::ConfirmationRequired,
             SbError::ProcessFailed { code, .. } => ErrorCategory::Process(*code),
             _ => ErrorCategory::General,
@@ -171,6 +197,13 @@ impl SbError {
             SbError::AuthFailed { .. } => {
                 Some("Check your token with: sb config show --reveal".to_string())
             }
+            SbError::ReadOnly { .. } => Some(
+                "This path is read-only on the server (a bundled Library/Std page, or SB_READ_ONLY is set); your token is fine"
+                    .to_string(),
+            ),
+            SbError::PreconditionFailed { .. } => Some(
+                "Run `sb sync pull` to get the server version, then `sb sync conflicts`".to_string(),
+            ),
             SbError::HttpStatus { status, .. } if *status == 404 => {
                 Some("The requested resource was not found on the server".to_string())
             }
@@ -198,6 +231,13 @@ impl SbError {
                 Some(format!("stderr: {stderr}"))
             }
             SbError::ConfirmationRequired { rerun, .. } => Some(format!("re-run with: {rerun}")),
+            SbError::RuntimeTimeout { seconds } => Some(format!(
+                "Raise the limit with `--timeout <seconds>` (currently {seconds})"
+            )),
+            SbError::RevisionsDisabled => Some(
+                "Set SB_REVISIONS=unmanaged (or managed) on the server to enable page history"
+                    .to_string(),
+            ),
             _ => None,
         }
     }
@@ -502,6 +542,21 @@ mod tests {
     }
 
     #[test]
+    fn revisions_disabled_has_exit_code_4_and_friendly_message() {
+        let err = SbError::RevisionsDisabled;
+        assert_eq!(err.exit_code(), 4);
+        assert_eq!(err.code_str(), "not_found");
+        assert_eq!(err.to_string(), "revisions are not enabled for this space");
+    }
+
+    #[test]
+    fn revisions_disabled_hint_mentions_sb_revisions() {
+        let err = SbError::RevisionsDisabled;
+        let hint = err.hint().expect("RevisionsDisabled should have a hint");
+        assert!(hint.contains("SB_REVISIONS"));
+    }
+
+    #[test]
     fn page_already_exists_hint_contains_page_name() {
         let err = SbError::PageAlreadyExists {
             name: "my-page".into(),
@@ -511,5 +566,40 @@ mod tests {
             hint.contains("my-page"),
             "hint should contain page name, got: {hint}"
         );
+    }
+
+    #[test]
+    fn read_only_is_not_an_auth_failure() {
+        let err = SbError::ReadOnly {
+            url: "http://localhost:3000/.fs/Library/Std/Config.md".to_string(),
+        };
+        assert_ne!(
+            err.exit_code(),
+            3,
+            "403 means the path is read-only; re-authenticating cannot fix it"
+        );
+        assert_ne!(err.code_str(), "auth");
+        assert!(err.to_string().contains("read-only"));
+        assert!(err.hint().expect("read-only should hint").contains("token"));
+    }
+
+    #[test]
+    fn unauthorized_still_exits_3() {
+        let err = SbError::AuthFailed {
+            url: "http://localhost:3000".to_string(),
+            status: 401,
+        };
+        assert_eq!(err.exit_code(), 3);
+        assert_eq!(err.code_str(), "auth");
+    }
+
+    #[test]
+    fn precondition_failed_is_a_conflict() {
+        let err = SbError::PreconditionFailed {
+            url: "http://localhost:3000/.fs/page.md".to_string(),
+        };
+        assert_eq!(err.exit_code(), 5);
+        assert_eq!(err.code_str(), "conflict");
+        assert!(err.hint().expect("412 should hint").contains("pull"));
     }
 }

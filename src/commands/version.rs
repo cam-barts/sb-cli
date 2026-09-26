@@ -108,9 +108,37 @@ mod tests {
         }
     }
 
+    /// `console::set_colors_enabled` is process-global, so these two tests
+    /// clobber each other when `cargo test` runs them on different threads:
+    /// whichever reads after the other's write sees the wrong setting. They
+    /// take the same lock every other global-state test in the crate uses, and
+    /// restore what they found.
+    struct ColorGuard {
+        _lock: std::sync::MutexGuard<'static, ()>,
+        prev: bool,
+    }
+
+    impl ColorGuard {
+        fn set(enabled: bool) -> Self {
+            let lock = match crate::test_util::SB_SPACE_MUTEX.lock() {
+                Ok(g) => g,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            let prev = console::colors_enabled();
+            console::set_colors_enabled(enabled);
+            ColorGuard { _lock: lock, prev }
+        }
+    }
+
+    impl Drop for ColorGuard {
+        fn drop(&mut self) {
+            console::set_colors_enabled(self.prev);
+        }
+    }
+
     #[test]
     fn output_with_color_contains_ansi_escapes() {
-        console::set_colors_enabled(true);
+        let _g = ColorGuard::set(true);
         let mut buf = Vec::new();
         execute_to(&mut buf, false, true).unwrap();
         let s = String::from_utf8(buf).unwrap();
@@ -119,7 +147,7 @@ mod tests {
 
     #[test]
     fn output_without_color_contains_no_ansi_escapes() {
-        console::set_colors_enabled(false);
+        let _g = ColorGuard::set(false);
         let mut buf = Vec::new();
         execute_to(&mut buf, false, false).unwrap();
         let s = String::from_utf8(buf).unwrap();

@@ -3,7 +3,9 @@ pub mod completions;
 pub mod config;
 pub mod daily;
 pub mod describe;
+pub mod inbox;
 pub mod init;
+pub mod links;
 pub mod logs;
 pub mod lua;
 #[cfg(feature = "mcp")]
@@ -11,6 +13,7 @@ pub mod mcp;
 pub mod page;
 pub mod picker;
 pub mod query;
+pub mod revisions;
 #[cfg(feature = "skills")]
 pub mod schema;
 pub mod screenshot;
