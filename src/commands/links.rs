@@ -17,6 +17,7 @@ use crate::cli::OutputFormat;
 use crate::commands::server::{build_client, runtime_unavailable_error};
 use crate::config::ResolvedConfig;
 use crate::error::{SbError, SbResult};
+use console::Style;
 
 #[allow(clippy::too_many_arguments)]
 pub async fn execute(
@@ -27,7 +28,7 @@ pub async fn execute(
     fields: &[String],
     format: &OutputFormat,
     quiet: bool,
-    _color: bool,
+    color: bool,
 ) -> SbResult<()> {
     let space_root = crate::commands::page::find_space_root()?;
     let config = ResolvedConfig::load_from(&space_root)?;
@@ -57,8 +58,146 @@ pub async fn execute(
     };
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
+    // `--fields` and JSON keep the generic relation table; the default
+    // human view is grouped and readable.
+    if matches!(format, OutputFormat::Human) && fields.is_empty() {
+        render_human(&result, &page, outgoing, quiet, color, &mut handle).map_err(|e| {
+            SbError::Internal {
+                message: format!("failed to write output: {e}"),
+            }
+        })?;
+        return Ok(());
+    }
     render(&result, fields, format, quiet, empty_note, &mut handle)?;
     Ok(())
+}
+
+/// Human view. Backlinks: each linking page, with the line that links here
+/// underneath and the link to `page` highlighted. Outgoing: the distinct
+/// target pages, with a count when a page is linked more than once.
+fn render_human(
+    result: &serde_json::Value,
+    page: &str,
+    outgoing: bool,
+    quiet: bool,
+    color: bool,
+    out: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    let style = |s: Style| {
+        if color {
+            s.force_styling(true)
+        } else {
+            Style::new()
+        }
+    };
+    let head = style(Style::new().bold());
+    let page_style = style(Style::new().cyan().bold());
+    let dim = style(Style::new().dim());
+    let hit = style(Style::new().yellow().bold());
+
+    let rows = result.as_array().cloned().unwrap_or_default();
+    let field = |row: &serde_json::Value, key: &str| -> String {
+        row.get(key)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+
+    if rows.is_empty() {
+        if !quiet {
+            if outgoing {
+                writeln!(out, "{page} has no outgoing links.")?;
+            } else {
+                writeln!(out, "No backlinks to {page}.")?;
+            }
+        }
+        return Ok(());
+    }
+
+    if outgoing {
+        let mut targets: Vec<(String, usize)> = Vec::new();
+        for row in &rows {
+            let to = field(row, "to");
+            match targets.iter_mut().find(|(t, _)| *t == to) {
+                Some((_, n)) => *n += 1,
+                None => targets.push((to, 1)),
+            }
+        }
+        let n = targets.len();
+        let noun = if n == 1 { "page" } else { "pages" };
+        writeln!(
+            out,
+            "{} {}",
+            head.apply_to(page),
+            dim.apply_to(format!("→ links to {n} {noun}"))
+        )?;
+        writeln!(out)?;
+        for (target, count) in targets {
+            let times = if count > 1 {
+                format!(" {}", dim.apply_to(format!("×{count}")))
+            } else {
+                String::new()
+            };
+            writeln!(out, "  {}{times}", page_style.apply_to(target))?;
+        }
+        return Ok(());
+    }
+
+    let mut sources: Vec<(String, Vec<String>)> = Vec::new();
+    for row in &rows {
+        let src = field(row, "page");
+        let snippet = crate::commands::inbox::clean_snippet(&field(row, "snippet"));
+        match sources.iter_mut().find(|(p, _)| *p == src) {
+            Some((_, snips)) => snips.push(snippet),
+            None => sources.push((src, vec![snippet])),
+        }
+    }
+    let n = sources.len();
+    let noun = if n == 1 { "page" } else { "pages" };
+    writeln!(
+        out,
+        "{} {}",
+        head.apply_to(page),
+        dim.apply_to(format!("← linked from {n} {noun}"))
+    )?;
+    for (src, snippets) in sources {
+        writeln!(out)?;
+        writeln!(out, "{}", page_style.apply_to(src))?;
+        for snippet in snippets {
+            writeln!(out, "  {}", highlight_links_to(&snippet, page, &hit))?;
+        }
+    }
+    Ok(())
+}
+
+/// Style every `[[...]]` wiki link in `text` that points at `page` (ignoring
+/// an `|alias` or `#heading` suffix). Other text is left untouched.
+fn highlight_links_to(text: &str, page: &str, hit: &Style) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("[[") {
+        out.push_str(&rest[..start]);
+        let after = &rest[start + 2..];
+        match after.find("]]") {
+            Some(end) => {
+                let inner = &after[..end];
+                let target = inner.split(['|', '#']).next().unwrap_or("").trim();
+                let link = &rest[start..start + 2 + end + 2];
+                if target == page {
+                    out.push_str(&hit.apply_to(link).to_string());
+                } else {
+                    out.push_str(link);
+                }
+                rest = &after[end + 2..];
+            }
+            None => {
+                out.push_str(&rest[start..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// Interactively pick a page from the space when no page name is given.
@@ -252,6 +391,70 @@ mod tests {
     use crate::test_util::{make_space, SbSpaceGuard};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // --- render_human ---
+
+    fn backlink_rows() -> serde_json::Value {
+        serde_json::json!([
+            {"page": "Map", "to": "index", "snippet": "See also: [[index]] and [[Other]]"},
+            {"page": "Dash", "to": "index", "snippet": "> [[index|home]] views"},
+            {"page": "Map", "to": "index", "snippet": "- back to [[index#Top]] [pos:2]"}
+        ])
+    }
+
+    #[test]
+    fn human_backlinks_group_by_linking_page() {
+        let mut out = Vec::new();
+        render_human(&backlink_rows(), "index", false, false, false, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "index ← linked from 2 pages\n\nMap\n  See also: [[index]] and [[Other]]\n  back to [[index#Top]]\n\nDash\n  [[index|home]] views\n"
+        );
+    }
+
+    #[test]
+    fn human_outgoing_lists_distinct_targets_with_counts() {
+        let rows = serde_json::json!([
+            {"page": "index", "to": "A"}, {"page": "index", "to": "B"}, {"page": "index", "to": "A"}
+        ]);
+        let mut out = Vec::new();
+        render_human(&rows, "index", true, false, false, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "index → links to 2 pages\n\n  A ×2\n  B\n"
+        );
+    }
+
+    #[test]
+    fn human_empty_results_print_one_line() {
+        let mut back = Vec::new();
+        render_human(&serde_json::json!([]), "X", false, false, false, &mut back).unwrap();
+        assert_eq!(String::from_utf8(back).unwrap(), "No backlinks to X.\n");
+        let mut fwd = Vec::new();
+        render_human(&serde_json::json!([]), "X", true, false, false, &mut fwd).unwrap();
+        assert_eq!(
+            String::from_utf8(fwd).unwrap(),
+            "X has no outgoing links.\n"
+        );
+    }
+
+    #[test]
+    fn human_color_only_when_asked() {
+        let mut plain = Vec::new();
+        render_human(&backlink_rows(), "index", false, false, false, &mut plain).unwrap();
+        assert!(!String::from_utf8(plain).unwrap().contains('\x1b'));
+        let mut colored = Vec::new();
+        render_human(&backlink_rows(), "index", false, false, true, &mut colored).unwrap();
+        assert!(String::from_utf8(colored).unwrap().contains('\x1b'));
+    }
+
+    #[test]
+    fn highlight_links_to_only_styles_links_to_the_page() {
+        let hit = Style::new().bold().force_styling(true);
+        let s = highlight_links_to("[[index|x]] vs [[indexer]] vs [[index]]", "index", &hit);
+        assert_eq!(s.matches('\x1b').count(), 4, "two links styled: {s:?}");
+        assert!(s.contains(" vs [[indexer]] vs "));
+    }
 
     fn enable_runtime(space_root: &std::path::Path) {
         crate::config::update_config_value(&space_root.join(".sb"), "runtime", "available", true)

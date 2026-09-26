@@ -73,12 +73,14 @@ fn render_table(rows: &[serde_json::Value]) {
     };
 
     // Calculate column widths
-    let mut widths: Vec<usize> = columns.iter().map(|c| c.len()).collect();
+    // Char counts, not bytes: `{:<width$}` pads by chars, and names carry
+    // non-ASCII text (curly quotes, `…`).
+    let mut widths: Vec<usize> = columns.iter().map(|c| c.chars().count()).collect();
     for row in rows {
         if let Some(obj) = row.as_object() {
             for (i, col) in columns.iter().enumerate() {
                 let val = obj.get(col).map(value_to_string).unwrap_or_default();
-                widths[i] = widths[i].max(val.len());
+                widths[i] = widths[i].max(val.chars().count());
             }
         }
     }
@@ -112,11 +114,37 @@ fn render_table(rows: &[serde_json::Value]) {
 }
 
 fn value_to_string(v: &serde_json::Value) -> String {
-    match v {
+    let s = match v {
         serde_json::Value::String(s) => s.clone(),
         serde_json::Value::Null => "".to_string(),
+        serde_json::Value::Array(items)
+            if items.iter().all(|i| !i.is_object() && !i.is_array()) =>
+        {
+            items
+                .iter()
+                .map(|i| match i {
+                    serde_json::Value::String(s) => s.clone(),
+                    other => other.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
         other => other.to_string(),
+    };
+    fit_cell(&s)
+}
+
+/// Longest cell the human table prints before truncating with `…`. The full
+/// value is always available with `--format json`.
+const MAX_CELL_CHARS: usize = 60;
+
+fn fit_cell(s: &str) -> String {
+    let one_line = s.replace('\n', " ");
+    if one_line.chars().count() <= MAX_CELL_CHARS {
+        return one_line;
     }
+    let cut: String = one_line.chars().take(MAX_CELL_CHARS - 1).collect();
+    format!("{cut}…")
 }
 
 #[cfg(test)]
@@ -126,6 +154,27 @@ mod tests {
     use crate::test_util::{make_space, SbSpaceGuard};
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    // --- value_to_string / fit_cell ---
+
+    #[test]
+    fn value_to_string_joins_scalar_arrays() {
+        let v = serde_json::json!(["page", "ai-generated", 3]);
+        assert_eq!(value_to_string(&v), "page, ai-generated, 3");
+    }
+
+    #[test]
+    fn value_to_string_caps_long_cells_with_ellipsis() {
+        let long = "x".repeat(200);
+        let s = value_to_string(&serde_json::json!(long));
+        assert_eq!(s.chars().count(), MAX_CELL_CHARS);
+        assert!(s.ends_with('…'));
+    }
+
+    #[test]
+    fn value_to_string_flattens_newlines() {
+        assert_eq!(value_to_string(&serde_json::json!("a\nb")), "a b");
+    }
 
     fn enable_runtime(space_root: &std::path::Path) {
         crate::config::update_config_value(&space_root.join(".sb"), "runtime", "available", true)

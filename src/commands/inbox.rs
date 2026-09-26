@@ -135,11 +135,15 @@ fn render_human(
     Ok(())
 }
 
-/// Strip a snippet down to its prose: the leading list/checkbox marker and
-/// inline `[key: value]` attributes go; wiki links (`[[...]]`), `#tags`, and
-/// `@mentions` stay. Whitespace is collapsed to single spaces.
-fn clean_snippet(snippet: &str) -> String {
+/// Strip a snippet down to its prose: leading `>` quote markers, the
+/// list/checkbox marker, and inline `[key: value]` attributes go; wiki links
+/// (`[[...]]`), `#tags`, and `@mentions` stay. Whitespace is collapsed to
+/// single spaces. Shared with `sb links`.
+pub(crate) fn clean_snippet(snippet: &str) -> String {
     let mut s = snippet.trim_start();
+    while let Some(rest) = s.strip_prefix('>') {
+        s = rest.trim_start();
+    }
     for marker in ["- ", "* ", "+ "] {
         if let Some(rest) = s.strip_prefix(marker) {
             s = rest.trim_start();

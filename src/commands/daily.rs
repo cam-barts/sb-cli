@@ -772,6 +772,12 @@ async fn execute_read(
     args: &DailyArgs<'_>,
 ) -> SbResult<()> {
     let entries = collect_entries(space_root, config, args)?;
+    if entries.is_empty() && matches!(args.format, OutputFormat::Human) && !args.quiet {
+        eprintln!(
+            "No journal entries found (daily notes are read from `{}`).",
+            config.daily_path.value
+        );
+    }
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
     render_entries(&entries, args.format, args.short, &mut handle)
