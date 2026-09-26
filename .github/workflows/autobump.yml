@@ -4,9 +4,12 @@ on:
   push:
     branches: [main]
 
-# Default GITHUB_TOKEN: only needs read. All writes (bump commit, tag push,
-# workflow_dispatch on release.yml) go through the App installation token below
-# so they bypass the `main` ruleset via the App's bypass entry.
+# Default GITHUB_TOKEN: only needs read. All writes (bump commit, tag push) go
+# through the App installation token below so they bypass the `main` ruleset via
+# the App's bypass entry. Because the tag is pushed with the App token (not
+# GITHUB_TOKEN), the push itself triggers release.yml's `push: tags` — so this
+# workflow must NOT also dispatch release.yml, or every version builds and
+# publishes twice.
 permissions:
   contents: read
 
@@ -68,12 +71,3 @@ jobs:
         run: |
           git push origin main
           git push origin "${{ steps.bump.outputs.tag }}"
-
-      - name: Trigger release workflow
-        if: steps.bump.outputs.bumped == 'true'
-        env:
-          # Use the App token (not github.token) so the workflow_dispatch is
-          # attributed to the App and survives an `actions: write` restriction
-          # on the default GITHUB_TOKEN.
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: gh workflow run release.yml --ref "${{ steps.bump.outputs.tag }}"
