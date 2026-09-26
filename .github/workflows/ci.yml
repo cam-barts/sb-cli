@@ -1,9 +1,17 @@
 name: CI
 
+# Branch commits are covered by `pull_request`; `push` is only for `main`, so a
+# commit on a PR branch runs CI once instead of twice (push + pull_request).
 on:
   push:
-    branches: ["**"]
+    branches: [main]
   pull_request:
+
+# A newer commit on the same PR supersedes the running check; runs on `main`
+# are never cancelled, so every merge gets a complete result.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
@@ -12,6 +20,10 @@ jobs:
   lint:
     name: Lint
     runs-on: ubuntu-latest
+    # Auto Bump's `bump: version X -> Y` commit only changes version strings;
+    # the merge commit it follows was already checked. (`head_commit` is null
+    # on pull_request, so PRs always run.)
+    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -28,6 +40,10 @@ jobs:
   test:
     name: Test
     runs-on: ubuntu-latest
+    # Auto Bump's `bump: version X -> Y` commit only changes version strings;
+    # the merge commit it follows was already checked. (`head_commit` is null
+    # on pull_request, so PRs always run.)
+    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -39,6 +55,10 @@ jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    # Auto Bump's `bump: version X -> Y` commit only changes version strings;
+    # the merge commit it follows was already checked. (`head_commit` is null
+    # on pull_request, so PRs always run.)
+    if: ${{ !startsWith(github.event.head_commit.message, 'bump:') }}
     permissions:
       # The default GITHUB_TOKEN stays read-only. The badge-publish step uses
       # an App installation token so it can push to a ruleset-protected

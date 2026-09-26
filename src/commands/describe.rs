@@ -343,7 +343,13 @@ fn render(
             let type_w = summary
                 .fields
                 .values()
-                .flat_map(|v| v.iter().map(|(t, _)| t.len()))
+                .map(|v| {
+                    v.iter()
+                        .map(|(t, c)| format!("{t}({c})"))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                        .len()
+                })
                 .max()
                 .unwrap_or(0)
                 .max("type(s)".len());

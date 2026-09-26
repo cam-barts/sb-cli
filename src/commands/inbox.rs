@@ -12,6 +12,8 @@
 //! inbox, where a signature (`-- @name`, see `page::append_signature`)
 //! merely credits authorship and never queues anything here.
 
+use console::Style;
+
 use crate::cli::OutputFormat;
 use crate::commands::links::{lua_string_literal, render};
 use crate::commands::server::{build_client, runtime_unavailable_error};
@@ -25,7 +27,7 @@ pub async fn execute(
     fields: &[String],
     format: &OutputFormat,
     quiet: bool,
-    _color: bool,
+    color: bool,
 ) -> SbResult<()> {
     let space_root = crate::commands::page::find_space_root()?;
     let config = ResolvedConfig::load_from(&space_root)?;
@@ -41,8 +43,154 @@ pub async fn execute(
 
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
+    // `--fields` and JSON keep the generic relation rendering; the default
+    // human view is a readable, page-grouped list.
+    if matches!(format, OutputFormat::Human) && fields.is_empty() {
+        render_human(&result, &identity, quiet, color, &mut handle).map_err(|e| {
+            SbError::Internal {
+                message: format!("failed to write output: {e}"),
+            }
+        })?;
+        return Ok(());
+    }
     render(&result, fields, format, quiet, "No mentions.", &mut handle)?;
     Ok(())
+}
+
+/// Human view: a header, then mentions grouped under their page, each with
+/// its snippet cleaned of list markers and `[key: value]` attributes.
+/// Styling is applied only when `color` is true (`--no-color`, `NO_COLOR`,
+/// or a non-TTY stdout turn it off), so the plain output stays diffable.
+fn render_human(
+    result: &serde_json::Value,
+    identity: &str,
+    quiet: bool,
+    color: bool,
+    out: &mut dyn std::io::Write,
+) -> std::io::Result<()> {
+    let style = |s: Style| {
+        if color {
+            s.force_styling(true)
+        } else {
+            Style::new()
+        }
+    };
+    let head = style(Style::new().bold());
+    let page_style = style(Style::new().cyan().bold());
+    let dim = style(Style::new().dim());
+    let mention = style(Style::new().yellow().bold());
+
+    let rows = result.as_array().cloned().unwrap_or_default();
+    if rows.is_empty() {
+        if !quiet {
+            writeln!(out, "No open mentions for {identity}.")?;
+        }
+        return Ok(());
+    }
+
+    // Group by page, preserving the order pages first appear in.
+    let mut pages: Vec<(String, Vec<&serde_json::Value>)> = Vec::new();
+    for row in &rows {
+        let page = row
+            .get("page")
+            .and_then(|v| v.as_str())
+            .unwrap_or("?")
+            .to_string();
+        match pages.iter_mut().find(|(p, _)| *p == page) {
+            Some((_, items)) => items.push(row),
+            None => pages.push((page, vec![row])),
+        }
+    }
+
+    let n = rows.len();
+    let noun = if n == 1 { "mention" } else { "mentions" };
+    writeln!(
+        out,
+        "{} {}",
+        head.apply_to(identity),
+        dim.apply_to(format!("· {n} open {noun}"))
+    )?;
+    for (page, items) in pages {
+        writeln!(out)?;
+        writeln!(out, "{}", page_style.apply_to(page))?;
+        for row in items {
+            let is_task = row.get("fromTag").and_then(|v| v.as_str()) == Some("task");
+            let marker = if is_task { "☐" } else { "•" };
+            let snippet = row.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+            let words: Vec<String> = clean_snippet(snippet)
+                .split(' ')
+                .map(|w| {
+                    if w.starts_with('@') && w.len() > 1 {
+                        mention.apply_to(w).to_string()
+                    } else if w.starts_with('#') && w.len() > 1 {
+                        dim.apply_to(w).to_string()
+                    } else {
+                        w.to_string()
+                    }
+                })
+                .collect();
+            writeln!(out, "  {} {}", dim.apply_to(marker), words.join(" "))?;
+        }
+    }
+    Ok(())
+}
+
+/// Strip a snippet down to its prose: leading `>` quote markers, the
+/// list/checkbox marker, and inline `[key: value]` attributes go; wiki links
+/// (`[[...]]`), `#tags`, and `@mentions` stay. Whitespace is collapsed to
+/// single spaces. Shared with `sb links`.
+pub(crate) fn clean_snippet(snippet: &str) -> String {
+    let mut s = snippet.trim_start();
+    while let Some(rest) = s.strip_prefix('>') {
+        s = rest.trim_start();
+    }
+    for marker in ["- ", "* ", "+ "] {
+        if let Some(rest) = s.strip_prefix(marker) {
+            s = rest.trim_start();
+            break;
+        }
+    }
+    if s.len() >= 3 && s.starts_with('[') && s.as_bytes()[2] == b']' {
+        s = s[3..].trim_start();
+    }
+
+    let chars: Vec<char> = s.chars().collect();
+    let mut kept = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < chars.len() {
+        let is_single_open =
+            chars[i] == '[' && chars.get(i + 1) != Some(&'[') && (i == 0 || chars[i - 1] != '[');
+        if is_single_open {
+            if let Some(len) = chars[i + 1..].iter().position(|&c| c == ']') {
+                let inner: String = chars[i + 1..i + 1 + len].iter().collect();
+                if is_attribute(&inner) {
+                    i += len + 2;
+                    continue;
+                }
+            }
+        }
+        kept.push(chars[i]);
+        i += 1;
+    }
+    kept.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// `key: value` / `key:value`, where key is an identifier-ish word.
+fn is_attribute(inner: &str) -> bool {
+    match inner.split_once(':') {
+        Some((key, _)) => {
+            let key = key.trim();
+            !key.is_empty()
+                && key
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+                && key
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        }
+        None => false,
+    }
 }
 
 /// Resolve which `@name` to query: `--to` wins when given, otherwise the
@@ -75,10 +223,29 @@ pub(crate) fn normalize_identity(name: &str) -> String {
 /// `links::build_links_script` for why the query body has to be a plain
 /// `[[...]]` bracket referencing a Lua local, rather than interpolating the
 /// identity string into the query text directly.
+///
+/// "Open" matches SilverBullet's own Mention Inbox (`Library/Std/Editor/
+/// Mention Inbox`): a mention that sits in a *done* task is hidden. That
+/// filter needs the task object, so it runs in Lua after the query, and
+/// `limit` caps the filtered rows rather than the raw relations.
 fn build_inbox_script(identity: &str, limit: usize) -> String {
     let literal = lua_string_literal(identity);
     format!(
-        "local target = {literal}\nreturn query[[from index.tag \"relation\" where kind == \"at-mention\" and to == target limit {limit}]]"
+        "local target = {literal}
+local rows = query[[from index.tag \"relation\" where kind == \"at-mention\" and to == target]]
+local out = {{}}
+for _, m in ipairs(rows) do
+  local done = false
+  if m.fromTag == \"task\" then
+    local task = index.getObjectByRef(m.page, \"task\", m.from)
+    done = task ~= nil and task.done == true
+  end
+  if not done then
+    table.insert(out, m)
+    if #out >= {limit} then break end
+  end
+end
+return out"
     )
 }
 
@@ -148,7 +315,7 @@ mod tests {
         let script = build_inbox_script("@cam", 200);
         assert!(script.contains(r#"kind == "at-mention""#));
         assert!(script.contains("to == target"));
-        assert!(script.contains("limit 200"));
+        assert!(script.contains("if #out >= 200 then break end"));
         assert_eq!(script.lines().next().unwrap(), r#"local target = "@cam""#);
     }
 
@@ -162,7 +329,7 @@ mod tests {
         let query_line = script.lines().nth(1).unwrap();
         assert_eq!(
             query_line,
-            r#"return query[[from index.tag "relation" where kind == "at-mention" and to == target limit 200]]"#
+            r#"local rows = query[[from index.tag "relation" where kind == "at-mention" and to == target]]"#
         );
     }
 
@@ -172,6 +339,97 @@ mod tests {
         assert!(script.contains("query[["));
         assert!(!script.contains("[==["));
         assert!(!script.contains("]==]"));
+    }
+
+    #[test]
+    fn build_inbox_script_hides_mentions_in_done_tasks_and_limits_after_filtering() {
+        let script = build_inbox_script("@cam", 5);
+        assert!(script.contains(r#"index.getObjectByRef(m.page, "task", m.from)"#));
+        assert!(script.contains("task.done == true"));
+        assert!(script.contains("if #out >= 5 then break end"));
+        assert!(
+            !script.contains("limit 5"),
+            "limit must not cap the raw query"
+        );
+        assert!(script.trim_end().ends_with("return out"));
+    }
+
+    // --- clean_snippet ---
+
+    #[test]
+    fn clean_snippet_strips_task_marker_and_attributes() {
+        let s =
+            "- [ ] Approve: do the thing @cam #needscam [assignee:cam] [dream_prop:2026-09-13-1]";
+        assert_eq!(clean_snippet(s), "Approve: do the thing @cam #needscam");
+    }
+
+    #[test]
+    fn clean_snippet_strips_spaced_attributes_and_star_bullets() {
+        let s = "* [x] Rotate the token @cam #agent [assignee: cam] [created: 2026-09-26]";
+        assert_eq!(clean_snippet(s), "Rotate the token @cam #agent");
+    }
+
+    #[test]
+    fn clean_snippet_keeps_wiki_links_and_non_attribute_brackets() {
+        let s = "- see [[Projects/X]] and [draft] notes @cam";
+        assert_eq!(
+            clean_snippet(s),
+            "see [[Projects/X]] and [draft] notes @cam"
+        );
+    }
+
+    #[test]
+    fn clean_snippet_plain_paragraph_is_just_whitespace_collapsed() {
+        assert_eq!(clean_snippet("  hey   @cam, look  "), "hey @cam, look");
+    }
+
+    // --- render_human ---
+
+    fn sample_rows() -> serde_json::Value {
+        serde_json::json!([
+            {"page": "Pending/A", "fromTag": "task", "snippet": "- [ ] First @cam [assignee:cam]"},
+            {"page": "Log/B", "fromTag": "paragraph", "snippet": "ping @cam about this"},
+            {"page": "Pending/A", "fromTag": "task", "snippet": "- [ ] Second @cam #needscam"}
+        ])
+    }
+
+    #[test]
+    fn render_human_groups_by_page_in_first_seen_order() {
+        let mut out = Vec::new();
+        render_human(&sample_rows(), "@cam", false, false, &mut out).unwrap();
+        let text = String::from_utf8(out).unwrap();
+        assert_eq!(
+            text,
+            "@cam · 3 open mentions\n\nPending/A\n  ☐ First @cam\n  ☐ Second @cam #needscam\n\nLog/B\n  • ping @cam about this\n"
+        );
+    }
+
+    #[test]
+    fn render_human_without_color_has_no_ansi_escapes() {
+        let mut out = Vec::new();
+        render_human(&sample_rows(), "@cam", false, false, &mut out).unwrap();
+        assert!(!String::from_utf8(out).unwrap().contains('\x1b'));
+    }
+
+    #[test]
+    fn render_human_with_color_styles_the_output() {
+        let mut out = Vec::new();
+        render_human(&sample_rows(), "@cam", false, true, &mut out).unwrap();
+        assert!(String::from_utf8(out).unwrap().contains('\x1b'));
+    }
+
+    #[test]
+    fn render_human_empty_prints_a_note_and_no_json() {
+        let mut out = Vec::new();
+        render_human(&serde_json::json!([]), "@cam", false, false, &mut out).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            "No open mentions for @cam.\n"
+        );
+
+        let mut quiet = Vec::new();
+        render_human(&serde_json::json!([]), "@cam", true, false, &mut quiet).unwrap();
+        assert!(quiet.is_empty());
     }
 
     // --- execute() end-to-end against a mock Runtime API ---

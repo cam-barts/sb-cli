@@ -194,7 +194,9 @@ fn page_list_sort_name_orders_alphabetically() {
     let names: Vec<&str> = text
         .lines()
         .filter(|l| !l.trim().is_empty())
-        .map(|l| l.split_whitespace().next().unwrap_or(""))
+        // Human lines are "YYYY-MM-DD HH:MM  name": the name follows the
+        // two-space gap after the fixed-width date.
+        .map(|l| l.split_once("  ").map(|(_, name)| name).unwrap_or(""))
         .collect();
 
     // Alphabetical: apple < mango < zebra

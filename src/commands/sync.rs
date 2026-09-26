@@ -526,7 +526,7 @@ pub async fn execute_status(format: &OutputFormat, quiet: bool) -> SbResult<()> 
             println!("{:<17}{marker_conflict_count}", "Marker conflicts");
             println!("{:<17}{readonly_count}", "Read-only");
             println!("----------------------");
-            println!("Last sync: {last_sync_display}");
+            println!("Last sync: {}", humanize_last_sync(last_sync_display));
         }
     }
 
@@ -1516,11 +1516,44 @@ pub async fn execute_conflicts(format: &OutputFormat, quiet: bool) -> SbResult<(
     Ok(())
 }
 
+/// Render the stored last-sync stamp (a jiff `Zoned` string such as
+/// `2026-09-26T01:42:10.4259-04:00[America/New_York]`) as
+/// `2026-09-26 01:42 (3 min ago)` for humans. Anything unparseable,
+/// including `never`, is shown as-is.
+fn humanize_last_sync(raw: &str) -> String {
+    let Ok(zoned) = raw.parse::<jiff::Zoned>() else {
+        return raw.to_string();
+    };
+    let secs = jiff::Timestamp::now().as_second() - zoned.timestamp().as_second();
+    let ago = match secs {
+        s if s < 60 => "just now".to_string(),
+        s if s < 3_600 => format!("{} min ago", s / 60),
+        s if s < 86_400 => format!("{} h ago", s / 3_600),
+        s => format!("{} days ago", s / 86_400),
+    };
+    format!("{} ({ago})", zoned.strftime("%Y-%m-%d %H:%M"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::sync::scanner::{hash_file, mtime_ms};
     use crate::test_util::{make_space, SbSpaceGuard};
+
+    // --- humanize_last_sync ---
+
+    #[test]
+    fn humanize_last_sync_formats_a_zoned_stamp() {
+        let s = humanize_last_sync("2020-01-02T03:04:05.123-05:00[America/New_York]");
+        assert!(s.starts_with("2020-01-02 03:04 ("), "{s}");
+        assert!(s.ends_with("days ago)"), "{s}");
+    }
+
+    #[test]
+    fn humanize_last_sync_passes_through_never_and_garbage() {
+        assert_eq!(humanize_last_sync("never"), "never");
+        assert_eq!(humanize_last_sync("not a date"), "not a date");
+    }
 
     /// A push where one file 401s and another is merely read-only must still
     /// exit 3. Counting the read-only file as a success used to take the

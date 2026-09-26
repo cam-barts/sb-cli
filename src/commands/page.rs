@@ -318,19 +318,10 @@ pub async fn execute_list(
             if entries.is_empty() {
                 return Ok(());
             }
-            let name_width = entries
-                .iter()
-                .map(|e| e.name.len())
-                .max()
-                .unwrap_or(4)
-                .max(4);
+            // Date first: it is fixed-width, so a single very long page
+            // name can't push every date off the right edge of the screen.
             for entry in &entries {
-                println!(
-                    "{:<width$}  {}",
-                    entry.name,
-                    entry.modified,
-                    width = name_width
-                );
+                println!("{}  {}", entry.modified, entry.name);
             }
         }
     }

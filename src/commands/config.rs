@@ -134,6 +134,11 @@ fn print_human(config: &ResolvedConfig, reveal: bool) {
         format_string_value(&config.token.value, true, reveal),
         source_annotation(&config.token.source)
     );
+    println!(
+        "identity = {}  {}",
+        format_string_value(&config.identity.value, false, reveal),
+        source_annotation(&config.identity.source)
+    );
     println!();
 
     // [sync]
@@ -252,6 +257,7 @@ fn print_json(config: &ResolvedConfig, reveal: bool) {
         "server": {
             "server_url": json_optional_string_entry(&config.server_url, false, reveal),
             "token": json_optional_string_entry(&config.token, true, reveal),
+            "identity": json_optional_string_entry(&config.identity, false, reveal),
         },
         "sync": {
             "workers": json_entry(&config.sync_workers),

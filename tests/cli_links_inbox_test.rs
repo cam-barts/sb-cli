@@ -352,7 +352,7 @@ async fn assert_inbox_query_is_injection_safe(to: &str, expected_literal: &str) 
     );
     assert_eq!(
         body.lines().nth(1).unwrap(),
-        r#"return query[[from index.tag "relation" where kind == "at-mention" and to == target limit 200]]"#,
+        r#"local rows = query[[from index.tag "relation" where kind == "at-mention" and to == target]]"#,
         "query line must be a fixed constant regardless of identity, full body: {body}"
     );
 }
