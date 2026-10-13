@@ -529,6 +529,10 @@ async fn main() {
             debug!("dispatching: completions");
             commands::completions::execute(shell, install, cli.quiet, output_config.color)
         }
+        Some(Commands::Man { install }) => {
+            debug!("dispatching: man");
+            commands::man::execute(install, cli.quiet, output_config.color)
+        }
         Some(Commands::Upgrade { check }) => {
             debug!("dispatching: upgrade");
             // self_update uses a blocking HTTP client — run it off the async

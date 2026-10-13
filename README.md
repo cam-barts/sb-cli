@@ -216,6 +216,17 @@ sb completions zsh
 sb completions zsh --install
 ```
 
+### Man pages
+
+```sh
+# Print the roff source for sb(1)
+sb man
+
+# Install sb.1 plus a page per subcommand (sb-page-read.1, ...) under
+# $XDG_DATA_HOME/man/man1, then read them with `man sb` / `man sb-page-read`
+sb man --install
+```
+
 ### MCP server (AI build)
 
 The `ai` build exposes `sb` as a [Model Context Protocol](https://modelcontextprotocol.io)
@@ -261,6 +272,7 @@ when it's installed, otherwise a numbered prompt.
 | `sb template list` | List pages tagged `meta/template/page` (index-backed when the Runtime API is on, else a local frontmatter scan) |
 | `sb template new [name]` | Create a page from a template and open it in `$EDITOR` (use `--no-edit` to skip). `--template <name>` skips the picker; omitting it opens an fzf picker when `fzf` is installed, otherwise a numbered prompt. Omitting `name` uses the template's `suggestedName`/`confirmName` |
 | `sb completions <shell>` | Print a shell completion script (bash, zsh, fish, elvish, powershell); `--install` writes it to the standard location |
+| `sb man` | Print the `sb(1)` man page as roff; `--install` writes `sb.1` plus one page per subcommand to the XDG man1 directory |
 | `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`, `--task`, `--task-tag`, `--no-task-tag`, `--sign @name`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
 | `sb sync` | Bidirectional sync: pull then push (`--dry-run`) |
 | `sb sync pull` | Pull changes from server (`--dry-run`) |
