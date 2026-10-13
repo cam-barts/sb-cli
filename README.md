@@ -184,6 +184,23 @@ attached to a terminal). `openIfExists: true` makes a name collision non-fatal â
 instead of erroring, the existing page is opened rather than overwritten.
 Templates' `description` frontmatter is shown in `sb template list`.
 
+The optional `[template]` config section saves repetition when a space keeps its
+page templates in one folder:
+
+```toml
+[template]
+dir = "Library/Personal/Templates"
+default = "Project"
+```
+
+`dir` narrows `sb template list` to that folder, and lets any bare template name
+resolve inside it â€” `--template Project` finds
+`Library/Personal/Templates/Project` (so does `daily.template = "Daily"`). A
+name containing a `/` is already a page path and is used as given. `default` is
+the template `sb template new` uses when `--template` is omitted, instead of
+opening the picker. Both map to env vars in the usual way (`SB_TEMPLATE_DIR`,
+`SB_TEMPLATE_DEFAULT`).
+
 The UI-only template fields (`command`, `key`/`mac`, `priority`) have no
 command-palette/keybinding analog in the CLI and are ignored.
 
@@ -365,6 +382,10 @@ timeFormat = "%H:%M"       # Time format used for [time:: ...] attributes (defau
 bulletStyle = "*"          # Bullet character for journal entries: "*" or "-" (default: "*")
 taskTag = "task"           # Tag applied to --task entries (default: "task")
 taskTagMode = "auto"       # When to tag tasks: "auto" | "always" | "never" (default: "auto")
+
+[template]
+dir = "Library/Personal/Templates"  # Folder page templates live in (optional)
+default = "Project"        # Template used when `--template` is omitted (optional)
 
 [shell]
 enabled = false            # Enable shell endpoint access (default: false)

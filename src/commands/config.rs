@@ -196,6 +196,20 @@ fn print_human(config: &ResolvedConfig, reveal: bool) {
     );
     println!();
 
+    // [template]
+    println!("[template]");
+    println!(
+        "dir = {}  {}",
+        format_string_value(&config.template_dir.value, false, reveal),
+        source_annotation(&config.template_dir.source)
+    );
+    println!(
+        "default = {}  {}",
+        format_string_value(&config.template_default.value, false, reveal),
+        source_annotation(&config.template_default.source)
+    );
+    println!();
+
     // [shell]
     println!("[shell]");
     println!(
@@ -270,6 +284,10 @@ fn print_json(config: &ResolvedConfig, reveal: bool) {
             "dateFormat": json_entry(&config.daily_date_format),
             "taskTag": json_entry(&config.daily_task_tag),
             "taskTagMode": json_entry(&config.daily_task_tag_mode),
+        },
+        "template": {
+            "dir": json_optional_string_entry(&config.template_dir, false, reveal),
+            "default": json_optional_string_entry(&config.template_default, false, reveal),
         },
         "shell": {
             "enabled": json_entry(&config.shell_enabled),
