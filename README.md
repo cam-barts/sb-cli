@@ -55,6 +55,9 @@ Example (Linux x86_64, slim):
 
 ```sh
 curl -LO https://github.com/cam-barts/sb-cli/releases/latest/download/sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+# Optional: verify the download against the release's checksum file.
+curl -LO https://github.com/cam-barts/sb-cli/releases/latest/download/sha256sums.txt
+sha256sum --ignore-missing -c sha256sums.txt
 tar xzf sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
 sudo mv sb /usr/local/bin/
 ```

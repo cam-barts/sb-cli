@@ -114,7 +114,9 @@ jobs:
           path: artifacts
 
       - name: Generate checksums
-        run: sha256sum artifacts/sb-* > artifacts/sha256sums.txt
+        # Bare filenames (not `artifacts/sb-...`) so a downloader can run
+        # `sha256sum -c sha256sums.txt` next to the archive it just fetched.
+        run: cd artifacts && sha256sum sb-* > sha256sums.txt
 
       - name: Extract changelog for this version
         id: changelog
