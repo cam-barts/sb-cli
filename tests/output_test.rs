@@ -7,7 +7,15 @@ mod common;
 fn run_on_a_tty(args: &str, extra_env: &[(&str, &str)]) -> Option<String> {
     let sb = common::sb().unwrap();
     let cmdline = format!("{} {}", sb.get_program().to_string_lossy(), args);
-    let out = std::process::Command::new("script")
+    // `script` is a fresh process: the SB_* strip on `sb` above doesn't reach
+    // it, so strip again here.
+    let mut script = std::process::Command::new("script");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("SB_") {
+            script.env_remove(key);
+        }
+    }
+    let out = script
         .args(["-qec", &cmdline, "/dev/null"])
         .env("TERM", "xterm-256color")
         .env_remove("NO_COLOR")

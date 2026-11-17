@@ -1011,6 +1011,10 @@ mod tests {
     // --- template.dir name qualification (pure) ---
 
     fn config_with_template_dir(dir: Option<&str>) -> ResolvedConfig {
+        // Load under the env guard (dropped on return): the dev's SB_* and
+        // XDG config must not leak into the defaults.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let mut config = ResolvedConfig::load_from(Path::new("/nonexistent-sb-template-test"))
             .expect("defaults load without a config file");
         config.template_dir = crate::config::ResolvedValue::new(

@@ -1614,7 +1614,9 @@ template = "Daily note for {{date}}"
 
     #[test]
     fn xdg_value_used_when_per_space_does_not_define_it() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        // A panic in another guarded test poisons the lock; recover rather
+        // than fail here and hide the real failure.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         // Declared after the lock, so it drops (restoring SB_*) before it.
         let _scrub = crate::test_util::SbEnvScrub::strip();
         let space_dir = tempfile::tempdir().expect("create space tempdir");
@@ -1640,7 +1642,9 @@ dir = "from-xdg-sync-dir"
 
     #[test]
     fn per_space_overrides_xdg_when_both_define_a_field() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        // A panic in another guarded test poisons the lock; recover rather
+        // than fail here and hide the real failure.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         // Declared after the lock, so it drops (restoring SB_*) before it.
         let _scrub = crate::test_util::SbEnvScrub::strip();
         let space_dir = setup_config_dir(r#"server_url = "https://from-per-space.example.com""#);
@@ -1661,7 +1665,9 @@ dir = "from-xdg-sync-dir"
 
     #[test]
     fn env_overrides_both_per_space_and_xdg() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        // A panic in another guarded test poisons the lock; recover rather
+        // than fail here and hide the real failure.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         // Declared after the lock, so it drops (restoring SB_*) before it.
         let _scrub = crate::test_util::SbEnvScrub::strip();
         let space_dir = setup_config_dir(r#"server_url = "https://from-per-space.example.com""#);
@@ -1680,7 +1686,9 @@ dir = "from-xdg-sync-dir"
 
     #[test]
     fn xdg_token_used_when_per_space_has_no_token() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        // A panic in another guarded test poisons the lock; recover rather
+        // than fail here and hide the real failure.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         // Declared after the lock, so it drops (restoring SB_*) before it.
         let _scrub = crate::test_util::SbEnvScrub::strip();
         let space_dir = setup_config_dir(r#"server_url = "https://example.com""#);
@@ -1695,7 +1703,9 @@ dir = "from-xdg-sync-dir"
 
     #[test]
     fn xdg_daily_and_runtime_blocks_are_honored() {
-        let _lock = ENV_MUTEX.lock().unwrap();
+        // A panic in another guarded test poisons the lock; recover rather
+        // than fail here and hide the real failure.
+        let _lock = ENV_MUTEX.lock().unwrap_or_else(|p| p.into_inner());
         // Declared after the lock, so it drops (restoring SB_*) before it.
         let _scrub = crate::test_util::SbEnvScrub::strip();
         let space_dir = tempfile::tempdir().expect("create space tempdir");

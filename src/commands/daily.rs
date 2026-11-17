@@ -1899,6 +1899,7 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn resolve_task_tag_no_task_tag_flag_wins() {
         let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = task_config(tmp.path(), "always", "task");
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
@@ -1910,6 +1911,7 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn resolve_task_tag_explicit_flag_overrides_config() {
         let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = task_config(tmp.path(), "never", "task");
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
@@ -1924,6 +1926,7 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn resolve_task_tag_mode_never_and_always() {
         let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
         args.task = true;
@@ -1956,8 +1959,9 @@ dateFormat = "%Y-%m-%d"
             .unwrap();
         crate::config::update_config_value(&tmp.path().join(".sb"), "runtime", "available", true)
             .unwrap();
-        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
+        // Guard first: loading config reads the env the guard scrubs.
         let _g = SbSpaceGuard::set(tmp.path());
+        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
 
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
@@ -1987,8 +1991,9 @@ dateFormat = "%Y-%m-%d"
             .unwrap();
         crate::config::update_config_value(&tmp.path().join(".sb"), "runtime", "available", true)
             .unwrap();
-        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
+        // Guard first: loading config reads the env the guard scrubs.
         let _g = SbSpaceGuard::set(tmp.path());
+        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
 
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
@@ -2002,6 +2007,7 @@ dateFormat = "%Y-%m-%d"
         // runtime.available defaults to false; no network is attempted and we
         // fall back to tagging so the task is indexed under either setting.
         let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = task_config(tmp.path(), "auto", "task");
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
