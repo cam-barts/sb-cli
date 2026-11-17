@@ -171,3 +171,48 @@ async fn shell_propagates_exit_code() {
         .failure()
         .code(42);
 }
+
+/// Run `sb --format human shell failing-cmd` against a server whose shell
+/// answers with the given stderr and exit code.
+async fn run_failing_shell(stderr: &str, code: i32) -> assert_cmd::assert::Assert {
+    let server = MockServer::start().await;
+    let body = serde_json::json!({"stdout": "", "stderr": stderr, "code": code});
+    Mock::given(method("POST"))
+        .and(path("/.shell"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(body.to_string()))
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+    common::sb()
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "shell", "failing-cmd"])
+        .current_dir(dir.path())
+        .assert()
+}
+
+#[tokio::test]
+async fn shell_failure_with_empty_stderr_has_no_hint_line() {
+    run_failing_shell("", 7)
+        .await
+        .code(7)
+        .stderr(predicate::str::contains("process exited with code 7"))
+        .stderr(predicate::str::contains("stderr:").not());
+}
+
+#[test]
+fn token_with_invalid_header_characters_is_a_config_error_exit_1() {
+    // The token is sent as a Bearer header; a newline cannot be one. This must
+    // surface as a general error (exit 1) before any request is attempted.
+    let dir = setup_space("http://127.0.0.1:9", true);
+    common::sb()
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .env("SB_TOKEN", "bad\ntoken")
+        .args(["--format", "human", "shell", "ls"])
+        .current_dir(dir.path())
+        .assert()
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains("invalid header characters"));
+}

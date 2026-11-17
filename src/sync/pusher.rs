@@ -1231,6 +1231,20 @@ mod tests {
 
         assert_eq!(result.conflicts, 1, "should detect 1 conflict");
         assert_eq!(result.deleted, 0, "should not delete on conflict");
+
+        // The server's changed copy must survive: no DELETE may have been sent.
+        let requests = server
+            .received_requests()
+            .await
+            .expect("request recording is on by default");
+        assert!(
+            requests.iter().all(|r| r.method.as_str() != "DELETE"),
+            "a conflicted deletion must not reach the server, got: {:?}",
+            requests
+                .iter()
+                .map(|r| format!("{} {}", r.method, r.url.path()))
+                .collect::<Vec<_>>()
+        );
     }
 
     // Test: push skips and warns for files in _plug/ directory

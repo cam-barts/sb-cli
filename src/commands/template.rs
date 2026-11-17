@@ -1333,6 +1333,80 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn index_duplicates_collapse_to_one_entry() {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua_script"))
+                .respond_with(ResponseTemplate::new(200).set_body_string(
+                    r#"{"result":[{"name":"Meeting"},"Meeting",{"ref":"Meeting"},{"name":"Daily"}]}"#,
+                ))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            enable_runtime(tmp.path());
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let cfg = ResolvedConfig::load_from(tmp.path()).unwrap();
+            let templates = discover_templates(None, &cfg).await.unwrap();
+            let names: Vec<&str> = templates.iter().map(|t| t.name.as_str()).collect();
+            assert_eq!(names, vec!["Daily", "Meeting"]);
+        }
+
+        #[tokio::test]
+        async fn fetch_template_content_falls_back_to_remote_page() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.fs/Tmpl.md"))
+                .and(wiremock::matchers::header(
+                    "Authorization",
+                    "Bearer test-token",
+                ))
+                .respond_with(ResponseTemplate::new(200).set_body_string("remote body"))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let cfg = ResolvedConfig::load_from(tmp.path()).unwrap();
+            let got = fetch_template_content(tmp.path(), "Tmpl", &cfg, None)
+                .await
+                .unwrap();
+            assert_eq!(got.as_deref(), Some("remote body"));
+        }
+
+        #[tokio::test]
+        async fn fetch_template_content_propagates_server_errors() {
+            let server = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.fs/Tmpl.md"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("boom"))
+                .mount(&server)
+                .await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let cfg = ResolvedConfig::load_from(tmp.path()).unwrap();
+            let err = fetch_template_content(tmp.path(), "Tmpl", &cfg, None)
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(err, SbError::HttpStatus { status: 500, .. }),
+                "got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn fetch_template_content_missing_everywhere_is_none() {
+            let server = MockServer::start().await;
+            let tmp = make_space(Some(&server.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+            let cfg = ResolvedConfig::load_from(tmp.path()).unwrap();
+            // wiremock answers 404 for the unmocked path.
+            let got = fetch_template_content(tmp.path(), "Nope", &cfg, None)
+                .await
+                .unwrap();
+            assert_eq!(got, None);
+        }
+
+        #[tokio::test]
         async fn open_if_exists_does_not_error_when_page_exists() {
             // Runtime off; static suggestedName + confirmName:false so no prompt.
             let tmp = make_space(None);

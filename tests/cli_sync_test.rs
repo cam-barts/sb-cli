@@ -412,6 +412,38 @@ async fn sync_status_marker_hint_suppressed_under_quiet() {
 }
 
 #[tokio::test]
+async fn sync_conflicts_marker_hint_on_stderr_suppressed_under_quiet() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let space = setup_space(&dir, &server.uri());
+
+    std::fs::write(
+        space.join("space").join("Marked.md"),
+        "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
+    )
+    .unwrap();
+
+    // The listing goes to stdout, the nudge to stderr.
+    sb_in(&space)
+        .args(["--format", "human", "sync", "conflicts"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Marked.md"))
+        .stdout(predicate::str::contains("will not resolve for you").not())
+        .stderr(predicate::str::contains(
+            "1 file(s) contain conflict markers",
+        ));
+
+    // --quiet drops the hint but keeps the listing.
+    sb_in(&space)
+        .args(["--quiet", "--format", "human", "sync", "conflicts"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Marked.md"))
+        .stderr(predicate::str::contains("will not resolve for you").not());
+}
+
+#[tokio::test]
 async fn sync_conflicts_lists_plain_git_markers_as_marker_conflict_kind() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;
@@ -1586,6 +1618,45 @@ fn row_field(db: &std::path::Path, path: &str, column: &str) -> Option<String> {
     .optional()
     .unwrap()
     .flatten()
+}
+
+/// Keep-remote never fetches the server's current copy, so it cannot know the
+/// right ETag. A stale one left in the row would make every later push 412.
+#[test]
+fn resolve_keep_remote_clears_the_stored_remote_etag() {
+    let dir = TempDir::new().unwrap();
+    let space = setup_two_conflicts(&dir, "https://sb.example.com");
+    let db = space.join(".sb").join("state.db");
+
+    // Opening the db through sb runs the remote_etag migration.
+    sb_in(&space)
+        .args(["sync", "conflicts", "--format", "json"])
+        .assert()
+        .success();
+    Connection::open(&db)
+        .unwrap()
+        .execute("UPDATE sync_state SET remote_etag = '\"stale-etag\"'", [])
+        .unwrap();
+    assert_eq!(
+        row_field(&db, "Doc.md", "remote_etag").as_deref(),
+        Some("\"stale-etag\"")
+    );
+
+    sb_in(&space)
+        .args(["sync", "resolve", "Doc.md", "--keep-remote"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        row_field(&db, "Doc.md", "status").as_deref(),
+        Some("synced")
+    );
+    assert_eq!(row_field(&db, "Doc.md", "remote_etag"), None);
+    // The untouched conflict keeps its etag: only the resolved row is cleared.
+    assert_eq!(
+        row_field(&db, "Journal/Entry.md", "remote_etag").as_deref(),
+        Some("\"stale-etag\"")
+    );
 }
 
 // ---------------------------------------------------------------------------
