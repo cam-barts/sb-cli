@@ -30,10 +30,13 @@ keychain = true
     Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // An exported SB_TOKEN wins before the keychain step; SB_SPACE outranks cwd.
+        .env_remove("SB_TOKEN")
+        .env_remove("SB_SPACE")
         .current_dir(dir.path())
         .args(["server", "ping"])
         .assert()
-        .failure()
+        .code(3)
         .stderr(predicates::str::contains("OS keychain"));
 }
 
@@ -49,10 +52,15 @@ server_url = "https://example.com"
     Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .env_remove("SB_TOKEN")
+        .env_remove("SB_SPACE")
         .current_dir(dir.path())
         .args(["server", "ping"])
         .assert()
-        .failure()
+        // Must be the TokenNotFound path (exit 3 + source list), or "omits the
+        // keychain" passes vacuously on any other failure.
+        .code(3)
+        .stderr(predicates::str::contains("SB_TOKEN environment variable"))
         .stderr(predicates::str::contains("OS keychain").not());
 }
 

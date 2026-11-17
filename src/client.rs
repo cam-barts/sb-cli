@@ -1225,7 +1225,7 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/.ping"))
             .and(wiremock::matchers::header_exists("Authorization"))
-            .respond_with(ResponseTemplate::new(500))
+            .respond_with(ResponseTemplate::new(401))
             .expect(0)
             .mount(&server)
             .await;

@@ -120,6 +120,10 @@ token = "secret123"
     Command::cargo_bin("sb")
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // Never let a dev shell's space or token reach a --reveal run: a
+        // failure would print the real token into the test log.
+        .env_remove("SB_SPACE")
+        .env_remove("SB_TOKEN")
         .args(["--format", "human", "config", "show", "--reveal"])
         .current_dir(dir.path())
         .assert()

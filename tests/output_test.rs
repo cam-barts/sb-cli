@@ -11,6 +11,11 @@ fn run_on_a_tty(args: &str, extra_env: &[(&str, &str)]) -> Option<String> {
         .args(["-qec", &cmdline, "/dev/null"])
         .env("TERM", "xterm-256color")
         .env_remove("NO_COLOR")
+        // Inherited colour/log settings would skew either leg: CLICOLOR=0 kills
+        // the positive case, RUST_LOG adds tracing's own ANSI to the PTY.
+        .env_remove("CLICOLOR")
+        .env_remove("CLICOLOR_FORCE")
+        .env_remove("RUST_LOG")
         .envs(extra_env.iter().copied())
         .output()
         .ok()?;
@@ -19,8 +24,10 @@ fn run_on_a_tty(args: &str, extra_env: &[(&str, &str)]) -> Option<String> {
 
 /// `sb version` styles its labels, but only when colour is on. Colour needs a
 /// TTY, so piped runs (every other test) can never show it; this drives a real
-/// PTY and proves it is present by default and removed by `--no-color` and
-/// `NO_COLOR`.
+/// PTY and checks it is present by default and removed by `--no-color` (sb's
+/// own `should_color`). The `NO_COLOR` leg checks the user-visible result
+/// only: the console crate honours NO_COLOR itself, so that leg would pass
+/// even if sb's NO_COLOR branch were removed.
 #[cfg(target_os = "linux")]
 #[test]
 fn colour_is_on_for_a_tty_and_off_with_no_color_flag_or_env() {

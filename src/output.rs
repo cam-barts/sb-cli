@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[test]
-    fn detect_case_insensitive_fs_errors_when_the_dir_is_unwritable() {
+    fn detect_case_insensitive_fs_errors_when_the_dir_is_missing() {
         let missing = tempfile::TempDir::new().unwrap().path().join("gone");
         assert!(detect_case_insensitive_fs(&missing).is_err());
     }
