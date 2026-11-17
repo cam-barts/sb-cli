@@ -331,6 +331,12 @@ pub enum Commands {
         #[arg(long)]
         install: bool,
     },
+    /// Render the man page to stdout, or install a page per command with --install
+    Man {
+        /// Install `sb.1` plus one page per subcommand into the XDG man1 directory
+        #[arg(long)]
+        install: bool,
+    },
     /// Update sb to the latest GitHub release (matching this build's flavor)
     Upgrade {
         /// Report whether a newer release is available without installing it

@@ -55,6 +55,9 @@ Example (Linux x86_64, slim):
 
 ```sh
 curl -LO https://github.com/cam-barts/sb-cli/releases/latest/download/sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
+# Optional: verify the download against the release's checksum file.
+curl -LO https://github.com/cam-barts/sb-cli/releases/latest/download/sha256sums.txt
+sha256sum --ignore-missing -c sha256sums.txt
 tar xzf sb-v1.0.0-x86_64-unknown-linux-gnu.tar.gz
 sudo mv sb /usr/local/bin/
 ```
@@ -184,6 +187,23 @@ attached to a terminal). `openIfExists: true` makes a name collision non-fatal â
 instead of erroring, the existing page is opened rather than overwritten.
 Templates' `description` frontmatter is shown in `sb template list`.
 
+The optional `[template]` config section saves repetition when a space keeps its
+page templates in one folder:
+
+```toml
+[template]
+dir = "Library/Personal/Templates"
+default = "Project"
+```
+
+`dir` narrows `sb template list` to that folder, and lets any bare template name
+resolve inside it â€” `--template Project` finds
+`Library/Personal/Templates/Project` (so does `daily.template = "Daily"`). A
+name containing a `/` is already a page path and is used as given. `default` is
+the template `sb template new` uses when `--template` is omitted, instead of
+opening the picker. Both map to env vars in the usual way (`SB_TEMPLATE_DIR`,
+`SB_TEMPLATE_DEFAULT`).
+
 The UI-only template fields (`command`, `key`/`mac`, `priority`) have no
 command-palette/keybinding analog in the CLI and are ignored.
 
@@ -214,6 +234,17 @@ sb completions zsh
 # Install to the standard location for your shell (auto-detected from $SHELL
 # when omitted). Prints any fpath/rc step the shell needs.
 sb completions zsh --install
+```
+
+### Man pages
+
+```sh
+# Print the roff source for sb(1)
+sb man
+
+# Install sb.1 plus a page per subcommand (sb-page-read.1, ...) under
+# $XDG_DATA_HOME/man/man1, then read them with `man sb` / `man sb-page-read`
+sb man --install
 ```
 
 ### MCP server (AI build)
@@ -261,6 +292,7 @@ when it's installed, otherwise a numbered prompt.
 | `sb template list` | List pages tagged `meta/template/page` (index-backed when the Runtime API is on, else a local frontmatter scan) |
 | `sb template new [name]` | Create a page from a template and open it in `$EDITOR` (use `--no-edit` to skip). `--template <name>` skips the picker; omitting it opens an fzf picker when `fzf` is installed, otherwise a numbered prompt. Omitting `name` uses the template's `suggestedName`/`confirmName` |
 | `sb completions <shell>` | Print a shell completion script (bash, zsh, fish, elvish, powershell); `--install` writes it to the standard location |
+| `sb man` | Print the `sb(1)` man page as roff; `--install` writes `sb.1` plus one page per subcommand to the XDG man1 directory |
 | `sb daily [ENTRY...]` | Journal today: write entry, pipe from stdin, or open in `$EDITOR`. Date flags: `--yesterday`, `--offset`, `--on`. Write flags: `--star`, `--time`, `--no-time`, `--task`, `--task-tag`, `--no-task-tag`, `--sign @name`. Read flags: `-n`, `--from`, `--to`, `--contains`, `--tags`, `--starred`, `--short`. |
 | `sb sync` | Bidirectional sync: pull then push (`--dry-run`) |
 | `sb sync pull` | Pull changes from server (`--dry-run`) |
@@ -353,6 +385,10 @@ timeFormat = "%H:%M"       # Time format used for [time:: ...] attributes (defau
 bulletStyle = "*"          # Bullet character for journal entries: "*" or "-" (default: "*")
 taskTag = "task"           # Tag applied to --task entries (default: "task")
 taskTagMode = "auto"       # When to tag tasks: "auto" | "always" | "never" (default: "auto")
+
+[template]
+dir = "Library/Personal/Templates"  # Folder page templates live in (optional)
+default = "Project"        # Template used when `--template` is omitted (optional)
 
 [shell]
 enabled = false            # Enable shell endpoint access (default: false)

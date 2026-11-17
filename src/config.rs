@@ -23,6 +23,8 @@ pub struct ConfigFile {
     pub auth: AuthConfigFile,
     #[serde(default)]
     pub runtime: RuntimeConfigFile,
+    #[serde(default)]
+    pub template: TemplateConfigFile,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -63,6 +65,17 @@ pub struct AuthConfigFile {
 #[derive(Debug, Default, serde::Deserialize)]
 pub struct RuntimeConfigFile {
     pub available: Option<bool>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct TemplateConfigFile {
+    /// Page-name prefix the space keeps its page templates under, e.g.
+    /// `Library/Personal/Templates`. Narrows `sb template list` to that folder
+    /// and lets a template be named by its leaf.
+    pub dir: Option<String>,
+    /// Template `sb template new` uses when `--template` is omitted, instead of
+    /// opening the picker.
+    pub default: Option<String>,
 }
 
 /// Tracks where a configuration value came from.
@@ -125,6 +138,8 @@ pub struct ResolvedConfig {
     pub shell_enabled: ResolvedValue<bool>,
     pub auth_keychain: ResolvedValue<bool>,
     pub runtime_available: ResolvedValue<bool>,
+    pub template_dir: ResolvedValue<Option<String>>,
+    pub template_default: ResolvedValue<Option<String>>,
 }
 
 /// Mask an auth token for display.
@@ -338,6 +353,25 @@ impl ResolvedConfig {
             false,
         )?;
 
+        // Stored without surrounding slashes so callers can join with exactly one.
+        let template_dir = Self::resolve_optional_string(
+            "SB_TEMPLATE_DIR",
+            config_file.template.dir,
+            user_config.template.dir,
+        );
+        let template_dir = ResolvedValue::new(
+            template_dir
+                .value
+                .map(|d| d.trim_matches('/').to_string())
+                .filter(|d| !d.is_empty()),
+            template_dir.source,
+        );
+        let template_default = Self::resolve_optional_string(
+            "SB_TEMPLATE_DEFAULT",
+            config_file.template.default,
+            user_config.template.default,
+        );
+
         Ok(ResolvedConfig {
             server_url,
             token,
@@ -357,6 +391,8 @@ impl ResolvedConfig {
             shell_enabled,
             auth_keychain,
             runtime_available,
+            template_dir,
+            template_default,
         })
     }
 
@@ -627,6 +663,8 @@ pub struct UserConfig {
     pub auth: AuthConfigFile,
     #[serde(default)]
     pub runtime: RuntimeConfigFile,
+    #[serde(default)]
+    pub template: TemplateConfigFile,
 }
 
 /// Load the user-level XDG config. Returns defaults if the file does not exist.
@@ -1286,6 +1324,52 @@ taskTagMode = "sometimes"
             }
             other => panic!("expected Config error, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn template_section_loads_dir_and_default() {
+        let _g = EnvTestGuard::new();
+        let dir = setup_config_dir(
+            r#"
+[template]
+dir = "Library/Personal/Templates/"
+default = "Project"
+"#,
+        );
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        // Surrounding slashes are trimmed so callers can join with exactly one.
+        assert_eq!(
+            config.template_dir.value.as_deref(),
+            Some("Library/Personal/Templates")
+        );
+        assert_eq!(config.template_dir.source, ConfigSource::File);
+        assert_eq!(config.template_default.value.as_deref(), Some("Project"));
+    }
+
+    #[test]
+    fn template_section_defaults_to_unset() {
+        let _g = EnvTestGuard::new();
+        let dir = setup_config_dir("server_url = \"https://example.com\"\n");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert!(config.template_dir.value.is_none());
+        assert!(config.template_default.value.is_none());
+        assert_eq!(config.template_dir.source, ConfigSource::Default);
+    }
+
+    #[test]
+    fn template_dir_env_overrides_file_and_trims_slashes() {
+        let _g = EnvTestGuard::new();
+        let dir = setup_config_dir(
+            r#"
+[template]
+dir = "FromFile"
+"#,
+        );
+        std::env::set_var("SB_TEMPLATE_DIR", "/Templates/");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        std::env::remove_var("SB_TEMPLATE_DIR");
+        assert_eq!(config.template_dir.value.as_deref(), Some("Templates"));
+        assert!(matches!(config.template_dir.source, ConfigSource::Env(_)));
     }
 
     #[test]

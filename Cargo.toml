@@ -75,6 +75,7 @@ self_update = { version = "0.44", default-features = false, features = [
     "archive-zip",
     "compression-zip-deflate",
 ] }
+clap_mangen = "0.3.3"
 
 [dev-dependencies]
 wiremock = "0.6"

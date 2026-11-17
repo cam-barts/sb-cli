@@ -131,7 +131,8 @@ fn shell_from_name(name: &str) -> Option<Shell> {
     }
 }
 
-fn data_home() -> SbResult<PathBuf> {
+/// XDG data home (`$XDG_DATA_HOME`, else `~/.local/share`). Shared with `sb man`.
+pub(crate) fn data_home() -> SbResult<PathBuf> {
     if let Ok(x) = std::env::var("XDG_DATA_HOME") {
         if !x.is_empty() {
             return Ok(PathBuf::from(x));

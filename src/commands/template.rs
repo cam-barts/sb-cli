@@ -109,8 +109,9 @@ pub async fn execute_new(
     // template name must be given explicitly.
     let cursor_fill = read_piped_stdin()?;
 
-    // Resolve which template to use.
-    let template_name = match template {
+    // Resolve which template to use: the flag wins, then `template.default`,
+    // then the interactive picker.
+    let template_name = match template.or(config.template_default.value.as_deref()) {
         Some(t) => t.to_string(),
         None => {
             let templates = discover_templates(cli_token, &config).await?;
@@ -401,12 +402,19 @@ pub async fn discover_templates(
     cli_token: Option<&str>,
     config: &ResolvedConfig,
 ) -> SbResult<Vec<TemplateInfo>> {
-    if config.runtime_available.value {
-        discover_via_index(cli_token).await
+    let mut templates = if config.runtime_available.value {
+        discover_via_index(cli_token).await?
     } else {
         let content_dir = find_content_dir()?;
-        discover_via_scan(&content_dir)
+        discover_via_scan(&content_dir)?
+    };
+    // `template.dir` narrows discovery to one folder of the space, for spaces
+    // that keep page templates together (both discovery paths, one filter).
+    if let Some(dir) = config.template_dir.value.as_deref() {
+        let prefix = format!("{dir}/");
+        templates.retain(|t| t.name.starts_with(&prefix));
     }
+    Ok(templates)
 }
 
 async fn discover_via_index(cli_token: Option<&str>) -> SbResult<Vec<TemplateInfo>> {
@@ -586,42 +594,71 @@ async fn render_via_runtime(cli_token: Option<&str>, body: &str) -> SbResult<Str
     }
 }
 
-/// Fetch template content: try local file first, then remote.
+/// Fetch template content: try local files first, then remote.
 ///
-/// Returns `None` when the template cannot be found in either location. Shared
-/// by `daily`, `page create`, and `template new`.
+/// Each candidate name (see `template_candidates`) is tried locally before any
+/// of them is tried remotely, so an offline space always resolves without
+/// touching the network. Returns `None` when no candidate exists in either
+/// location. Shared by `daily`, `page create`, and `template new`.
 pub(crate) async fn fetch_template_content(
     content_dir: &Path,
     template_name: &str,
     config: &ResolvedConfig,
     cli_token: Option<&str>,
 ) -> SbResult<Option<String>> {
-    let local_path = content_dir.join(format!("{}.md", template_name));
-    if local_path.exists() {
-        let content = std::fs::read_to_string(&local_path).map_err(|e| SbError::Filesystem {
-            message: "failed to read template".into(),
-            path: local_path.display().to_string(),
-            source: Some(e),
-        })?;
-        return Ok(Some(content));
-    }
+    let candidates = template_candidates(template_name, config);
 
-    if let Some(ref url) = config.server_url.value {
-        match crate::config::resolve_token(cli_token, config) {
-            Ok(token) => {
-                let client = SbClient::new(url, &token)?;
-                match client.get_page(template_name).await {
-                    Ok(content) => return Ok(Some(content)),
-                    Err(SbError::PageNotFound { .. }) => return Ok(None),
-                    Err(e) => return Err(e),
-                }
-            }
-            Err(SbError::TokenNotFound { .. }) => return Ok(None),
-            Err(e) => return Err(e),
+    for name in &candidates {
+        if let Some(content) = read_local_template(content_dir, name)? {
+            return Ok(Some(content));
         }
     }
 
+    let Some(url) = config.server_url.value.as_deref() else {
+        return Ok(None);
+    };
+    let token = match crate::config::resolve_token(cli_token, config) {
+        Ok(token) => token,
+        Err(SbError::TokenNotFound { .. }) => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let client = SbClient::new(url, &token)?;
+    for name in &candidates {
+        match client.get_page(name).await {
+            Ok(content) => return Ok(Some(content)),
+            // A missing candidate falls through to the next one; anything else
+            // (auth, connection) is a real failure and must not be masked.
+            Err(SbError::PageNotFound { .. }) => continue,
+            Err(e) => return Err(e),
+        }
+    }
     Ok(None)
+}
+
+/// Candidate page names for a template, in priority order.
+///
+/// With `template.dir` set, a bare leaf name is looked up inside that folder
+/// first, so `--template Project` (or `daily.template = "Daily"`) resolves
+/// without spelling out the full page path. A name containing a `/` is already
+/// a page path and is used as-is.
+fn template_candidates(name: &str, config: &ResolvedConfig) -> Vec<String> {
+    match config.template_dir.value.as_deref() {
+        Some(dir) if !name.contains('/') => vec![format!("{dir}/{name}"), name.to_string()],
+        _ => vec![name.to_string()],
+    }
+}
+
+fn read_local_template(content_dir: &Path, template_name: &str) -> SbResult<Option<String>> {
+    let local_path = content_dir.join(format!("{}.md", template_name));
+    if !local_path.exists() {
+        return Ok(None);
+    }
+    let content = std::fs::read_to_string(&local_path).map_err(|e| SbError::Filesystem {
+        message: "failed to read template".into(),
+        path: local_path.display().to_string(),
+        source: Some(e),
+    })?;
+    Ok(Some(content))
 }
 
 // ---------------------------------------------------------------------------
@@ -969,6 +1006,43 @@ mod tests {
             decide("Journal/", false, false),
             NameDecision::Prompt(_)
         ));
+    }
+
+    // --- template.dir name qualification (pure) ---
+
+    fn config_with_template_dir(dir: Option<&str>) -> ResolvedConfig {
+        let mut config = ResolvedConfig::load_from(Path::new("/nonexistent-sb-template-test"))
+            .expect("defaults load without a config file");
+        config.template_dir = crate::config::ResolvedValue::new(
+            dir.map(|d| d.to_string()),
+            crate::config::ConfigSource::File,
+        );
+        config
+    }
+
+    #[test]
+    fn template_candidates_without_dir_is_the_name_alone() {
+        let config = config_with_template_dir(None);
+        assert_eq!(template_candidates("Project", &config), vec!["Project"]);
+    }
+
+    #[test]
+    fn template_candidates_with_dir_tries_the_dir_first_then_the_bare_name() {
+        let config = config_with_template_dir(Some("Templates"));
+        assert_eq!(
+            template_candidates("Project", &config),
+            vec!["Templates/Project", "Project"]
+        );
+    }
+
+    #[test]
+    fn template_candidates_leaves_a_path_name_alone() {
+        // A name with a `/` is already a page path — prefixing it would point at
+        // a page that doesn't exist (`Templates/Library/Std/...`).
+        let config = config_with_template_dir(Some("Templates"));
+        for name in ["Library/Std/Quick Note", "Templates/Project"] {
+            assert_eq!(template_candidates(name, &config), vec![name]);
+        }
     }
 
     // --- frontmatter parsing ---

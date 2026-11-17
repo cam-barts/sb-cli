@@ -8,6 +8,7 @@ pub mod init;
 pub mod links;
 pub mod logs;
 pub mod lua;
+pub mod man;
 #[cfg(feature = "mcp")]
 pub mod mcp;
 pub mod page;
