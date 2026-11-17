@@ -65,7 +65,8 @@ jobs:
       # `badges` branch via the App's bypass entry.
       contents: read
     env:
-      # Region-coverage floor. The current sustained high is around 82%; this
+      # Region-coverage floor, measured over lib + integration tests with
+      # --features ai since 2026-11 (lib-only before, which read ~83%). This
       # is the ratchet — raise it (in a dedicated PR) when the repo holds a
       # new sustained high. Don't lower it without an explicit waiver from
       # the maintainer.
@@ -91,7 +92,11 @@ jobs:
       - name: Run tests under coverage instrumentation
         # --no-report captures coverage data without rendering, so the report
         # subcommands below can read the same data set in multiple formats.
-        run: cargo llvm-cov --lib --no-report
+        # No --lib: the tests/ integration suite drives the real `sb` binary,
+        # and cargo-llvm-cov instruments those child processes too. --features
+        # ai measures the gated mcp/skills/schema code (and is the only CI job
+        # that runs the ai tests at all).
+        run: cargo llvm-cov --features ai --no-report
       - name: Generate coverage reports
         run: |
           cargo llvm-cov report --json --summary-only --output-path coverage-summary.json
