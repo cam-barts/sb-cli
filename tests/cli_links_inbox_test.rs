@@ -2,6 +2,8 @@
 ///
 /// Uses assert_cmd to run the real binary and assert on exit code, stdout,
 /// stderr. Uses wiremock to stand in for the Runtime API.
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use wiremock::matchers::{body_string_contains, method, path};
@@ -22,16 +24,9 @@ fn setup_space(server_url: &str, runtime_available: bool) -> tempfile::TempDir {
 }
 
 fn sb_in(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("sb").unwrap();
+    let mut cmd = common::sb().unwrap();
     cmd.current_dir(dir)
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
-    // SB_SPACE outranks cwd and SB_SERVER_URL/SB_TOKEN outrank the space's
-    // config; never let a dev shell's values aim these at a real server.
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("SB_") {
-            cmd.env_remove(key);
-        }
-    }
     cmd
 }
 

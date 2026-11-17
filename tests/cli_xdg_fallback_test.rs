@@ -9,6 +9,8 @@
 //! only a minimal config, and an XDG file with the real settings. They then
 //! exercise commands end-to-end and assert the XDG values were applied.
 
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::path::Path;
@@ -34,7 +36,7 @@ fn setup(space_toml: &str, xdg_toml: &str) -> (TempDir, TempDir) {
 }
 
 fn sb_in(space: &Path, xdg: &Path) -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary");
+    let mut cmd = common::sb().expect("sb binary");
     cmd.current_dir(space).env("XDG_CONFIG_HOME", xdg);
     cmd
 }
@@ -161,11 +163,9 @@ fn no_token_in_either_file_fails_with_error_mentioning_xdg() {
     )
     .expect("write per-space");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .expect("sb binary")
         .env("XDG_CONFIG_HOME", xdg.path())
-        .env_remove("SB_TOKEN")
-        .env_remove("SB_SPACE")
         .current_dir(space.path())
         .args(["server", "ping"])
         .assert()

@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::fs;
@@ -30,7 +31,7 @@ async fn init_creates_sb_directory_and_files() {
 
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
@@ -75,7 +76,7 @@ async fn init_without_token_flag_does_not_write_token() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
 
     // Pass SB_TOKEN env — it should NOT be persisted to config.toml (T-02-07)
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri()])
@@ -103,7 +104,7 @@ async fn init_failed_ping_removes_sb_directory() {
 
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
@@ -128,7 +129,7 @@ async fn init_already_initialized_aborts() {
     // Manually create .sb/ to simulate already-initialized state
     fs::create_dir_all(temp_dir.path().join(".sb")).expect("create .sb dir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", "http://example.com", "--token", "t"])
@@ -146,7 +147,7 @@ async fn init_state_db_is_valid_sqlite() {
 
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
@@ -172,7 +173,7 @@ async fn init_normalizes_trailing_slash_in_url() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     let url_with_slash = format!("{}/", server.uri());
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &url_with_slash, "--token", "testtoken"])
@@ -203,7 +204,7 @@ async fn init_http_url_warns_about_insecure() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
 
     // MockServer always uses http:// so this test inherently uses an HTTP URL
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["init", &server.uri(), "--token", "testtoken"])
@@ -237,7 +238,7 @@ fn config_get_space_reports_sb_space_env_as_the_source() {
     )
     .unwrap();
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .env("SB_SPACE", space.path())
@@ -254,7 +255,7 @@ fn config_get_space_reports_sb_space_env_as_the_source() {
     assert_eq!(v["source"], "env: SB_SPACE");
 
     // --quiet prints nothing at all.
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .env("SB_SPACE", space.path())

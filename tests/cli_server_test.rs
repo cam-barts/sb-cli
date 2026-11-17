@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::path::Path;
@@ -28,7 +29,7 @@ async fn server_ping_reports_reachability() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     setup_initialized_space(temp_dir.path(), &server.uri(), "testtoken");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "server", "ping"])
@@ -47,13 +48,12 @@ async fn server_ping_uninitialized_fails() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     let xdg_dir = tempfile::TempDir::new().expect("create xdg tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["server", "ping"])
         .current_dir(temp_dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
-        .env_remove("SB_SPACE")
         .assert()
         .failure()
         .code(4) // NotInitialized -> not-found category
@@ -76,7 +76,7 @@ async fn server_config_displays_fields() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     setup_initialized_space(temp_dir.path(), &server.uri(), "testtoken");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "server", "config"])
@@ -106,7 +106,7 @@ async fn server_config_json_format() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     setup_initialized_space(temp_dir.path(), &server.uri(), "testtoken");
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["server", "config", "--format", "json"])
@@ -144,7 +144,7 @@ async fn server_ping_json_format() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     setup_initialized_space(temp_dir.path(), &server.uri(), "testtoken");
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["server", "ping", "--format", "json"])

@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::fs;
@@ -34,7 +35,7 @@ async fn lua_eval_returns_result_on_200() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "2 + 2"])
@@ -61,7 +62,7 @@ async fn lua_waits_out_the_index_catch_up_on_top_of_the_timeout() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--timeout", "1", "lua", "2 + 2"])
@@ -84,7 +85,7 @@ async fn lua_eval_reports_lua_error() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "nil.foo"])
@@ -102,7 +103,7 @@ async fn lua_unavailable_prints_docs_link() {
     // No [runtime] section means runtime_available = false (default)
     let dir = setup_space("http://localhost:19999", false);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "1 + 1"])
@@ -128,7 +129,7 @@ async fn query_returns_table_format() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
@@ -160,7 +161,7 @@ async fn query_returns_json_format() {
 
     let dir = setup_space(&server.uri(), true);
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
@@ -195,7 +196,7 @@ async fn query_empty_array_human_notes_no_results_on_stderr() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "query", "from index.tag \"none\""])
@@ -211,7 +212,7 @@ async fn query_unavailable_prints_docs_link() {
     // No [runtime] section means runtime_available = false
     let dir = setup_space("http://localhost:19999", false);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["query", "from index.tag \"page\""])
@@ -238,7 +239,7 @@ async fn query_sends_correct_lua_script() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["query", "from index.tag \"page\" limit 2"])
@@ -266,7 +267,7 @@ async fn query_with_non_array_result_falls_back_to_json() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "query", "some_scalar_expr"])

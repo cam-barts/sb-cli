@@ -1,10 +1,11 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 
 /// `sb completions zsh` prints a zsh completion script (defines `_sb`) to stdout.
 #[test]
 fn completions_zsh_prints_script() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .args(["completions", "zsh"])
         .assert()
@@ -15,7 +16,7 @@ fn completions_zsh_prints_script() {
 /// `sb completions bash` prints a bash completion script registering `_sb`.
 #[test]
 fn completions_bash_prints_script() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .args(["completions", "bash"])
         .assert()
@@ -26,7 +27,7 @@ fn completions_bash_prints_script() {
 /// `sb completions` without a shell and without --install is a usage error.
 #[test]
 fn completions_without_shell_errors() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .arg("completions")
         .assert()
@@ -40,7 +41,7 @@ fn completions_install_zsh_writes_underscore_sb() {
     let home = tempfile::tempdir().expect("tempdir");
     let data = tempfile::tempdir().expect("data tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("HOME", home.path())
         .env("XDG_DATA_HOME", data.path())

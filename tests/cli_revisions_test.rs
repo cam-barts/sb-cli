@@ -3,6 +3,8 @@
 ///
 /// Uses assert_cmd to run the real binary and assert on exit code,
 /// stdout/stderr, and filesystem side effects. Uses wiremock for HTTP.
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -28,16 +30,9 @@ fn setup_space(server_url: &str) -> TempDir {
 }
 
 fn sb_in(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary");
+    let mut cmd = common::sb().expect("sb binary");
     cmd.current_dir(dir.path())
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
-    // SB_SPACE outranks cwd and SB_SERVER_URL/SB_TOKEN outrank the space's
-    // config; restore would write into a real space.
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("SB_") {
-            cmd.env_remove(key);
-        }
-    }
     cmd
 }
 

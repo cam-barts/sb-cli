@@ -4,6 +4,8 @@
 //! All offline (`runtime.available` defaults to false), so discovery takes the
 //! local frontmatter-scan path and nothing talks to a server.
 
+mod common;
+
 use assert_cmd::Command;
 use tempfile::TempDir;
 
@@ -40,11 +42,9 @@ dir = "."
 }
 
 fn sb_in(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary");
+    let mut cmd = common::sb().expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        // SB_SPACE outranks cwd; `template new` would write into a real space.
-        .env_remove("SB_SPACE");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 
