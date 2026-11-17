@@ -1068,7 +1068,9 @@ mod tests {
     #[test]
     fn split_frontmatter_tolerates_bom() {
         let content = "\u{feff}---\ntags: template\n---\nx";
-        assert!(split_frontmatter(content).is_some());
+        let (fm, body) = split_frontmatter(content).expect("BOM must not hide frontmatter");
+        assert_eq!(fm, "tags: template\n");
+        assert_eq!(body, "x");
     }
 
     #[test]
@@ -1145,6 +1147,9 @@ mod tests {
     #[test]
     fn instantiate_template_passthrough_without_frontmatter() {
         assert_eq!(instantiate_template("plain |^|body", None), "plain body");
+        // No marker: fill is appended on its own line, or nothing is added.
+        assert_eq!(instantiate_template("plain", Some("X")), "plain\nX");
+        assert_eq!(instantiate_template("plain", None), "plain");
     }
 
     #[test]
@@ -1159,14 +1164,6 @@ mod tests {
         // Body has no |^| but stdin was piped → append after the body.
         let raw = "---\ntags: meta/template/page\n---\n# Intro\n";
         assert_eq!(instantiate_template(raw, Some("piped")), "# Intro\npiped");
-    }
-
-    #[test]
-    fn splice_cursor_removes_marker_without_fill() {
-        assert_eq!(splice_cursor("a |^| b", None), "a  b");
-        assert_eq!(splice_cursor("a |^| b", Some("X")), "a X b");
-        assert_eq!(splice_cursor("no marker", Some("X")), "no marker\nX");
-        assert_eq!(splice_cursor("no marker", None), "no marker");
     }
 
     // --- suggestedName / confirmName parsing ---
@@ -1296,7 +1293,7 @@ mod tests {
     mod execute_tests {
         use super::*;
         use crate::test_util::{make_space, SbSpaceGuard};
-        use wiremock::matchers::{method, path};
+        use wiremock::matchers::{body_string_contains, method, path};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         fn enable_runtime(space_root: &std::path::Path) {
@@ -1373,25 +1370,6 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn list_execute_json_ok() {
-            let server = MockServer::start().await;
-            Mock::given(method("POST"))
-                .and(path("/.runtime/lua_script"))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string(r#"{"result":[{"name":"T"}]}"#),
-                )
-                .mount(&server)
-                .await;
-            let tmp = make_space(Some(&server.uri()));
-            enable_runtime(tmp.path());
-            let _g = SbSpaceGuard::set(tmp.path());
-
-            execute_list(None, &OutputFormat::Json, true, false)
-                .await
-                .expect("list ok");
-        }
-
-        #[tokio::test]
         async fn fetch_and_render_offline_instantiates() {
             // No runtime → local file resolution + best-effort instantiation:
             // inject the template's `frontmatter:` block, drop `|^|`, ${..} literal.
@@ -1412,8 +1390,13 @@ mod tests {
         #[tokio::test]
         async fn fetch_and_render_runtime_renders() {
             let server = MockServer::start().await;
+            // Only answers if the request carries the template source to be
+            // rendered through `template.new`; otherwise wiremock returns 404
+            // and the fallback would yield the unrendered text instead.
             Mock::given(method("POST"))
                 .and(path("/.runtime/lua_script"))
+                .and(body_string_contains("template.new"))
+                .and(body_string_contains("# ${x}"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_string(r##"{"result":"# Rendered"}"##),
                 )

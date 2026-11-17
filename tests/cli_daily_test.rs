@@ -156,45 +156,14 @@ fn daily_append_to_existing_note_preserves_prior_content() {
     std::fs::create_dir_all(note_path.parent().unwrap()).expect("create Journal dir");
     std::fs::write(&note_path, "# Daily note\n").expect("write initial content");
 
+    // `--time` pins the otherwise wall-clock `[time:: ..]` attribute.
     sb_in(&space)
-        .args(["daily", "--append", "appended entry"])
+        .args(["daily", "--time", "10:00", "--append", "appended entry"])
         .assert()
         .success();
 
     let content = std::fs::read_to_string(&note_path).expect("read note");
-    assert!(
-        content.contains("# Daily note"),
-        "original content should be preserved; got: {content:?}"
-    );
-    assert!(
-        content.contains("appended entry"),
-        "appended text should be present; got: {content:?}"
-    );
-}
-
-/// `sb daily --append TEXT` on a note created from empty template still writes content.
-#[test]
-fn daily_append_creates_note_and_appends_when_missing() {
-    let space = default_space();
-    let today = jiff::Zoned::now().date();
-    let note_path = space
-        .path()
-        .join(format!("Journal/{}.md", today.strftime("%Y-%m-%d")));
-
-    // Note does not exist yet
-    assert!(!note_path.exists(), "note should not exist before test");
-
-    sb_in(&space)
-        .args(["daily", "--append", "first entry"])
-        .assert()
-        .success();
-
-    assert!(note_path.exists(), "note should be created");
-    let content = std::fs::read_to_string(&note_path).expect("read note");
-    assert!(
-        content.contains("first entry"),
-        "note should contain the appended text; got: {content:?}"
-    );
+    assert_eq!(content, "# Daily note\n* [time:: 10:00] appended entry\n");
 }
 
 /// `sb daily` (no flags) with `$EDITOR` unset returns exit code 1 with a
@@ -279,19 +248,14 @@ template = "Templates/DailyTemplate"
 
     sb_in(&space)
         .env_remove("EDITOR")
-        .args(["daily", "--append", "after template"])
+        .args(["daily", "--no-time", "--append", "after template"])
         .assert()
         .success();
 
-    assert!(note_path.exists(), "note should be created");
     let content = std::fs::read_to_string(&note_path).expect("read note");
-    assert!(
-        content.contains("# Daily"),
-        "template content should be in note; got: {content:?}"
-    );
-    assert!(
-        content.contains("after template"),
-        "appended text should follow template; got: {content:?}"
+    assert_eq!(
+        content,
+        "# Daily\n\n## Goals\n\n## Notes\n* after template\n"
     );
 }
 

@@ -126,5 +126,7 @@ fn fully_qualified_template_name_still_works_with_template_dir_set() {
         ])
         .assert()
         .success();
-    assert!(space.path().join("Projects").join("Thing.md").is_file());
+    let page =
+        std::fs::read_to_string(space.path().join("Projects").join("Thing.md")).expect("new page");
+    assert!(page.contains("In the template dir"), "got: {page:?}");
 }
