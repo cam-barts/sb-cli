@@ -40,7 +40,9 @@ dir = "content"
 fn sb_in(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // SB_SPACE outranks cwd; never let a dev shell's value leak in.
+        .env_remove("SB_SPACE");
     cmd
 }
 

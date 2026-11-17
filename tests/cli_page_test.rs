@@ -366,15 +366,19 @@ fn page_read_remote_fetches_from_server() {
             server.uri()
         );
         std::fs::write(sb_dir.join("config.toml"), config_content).expect("write config");
+        // A stale local copy: --remote must ignore it and serve the server's.
+        std::fs::write(dir.path().join("test-page.md"), "# Stale Local\n").expect("write local");
 
         Command::cargo_bin("sb")
             .expect("sb binary")
             .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+            .env_remove("SB_SPACE")
             .current_dir(dir.path())
             .args(["page", "read", "--remote", "test-page"])
             .assert()
             .success()
-            .stdout(predicate::str::contains("Remote Content"));
+            .stdout(predicate::str::contains("Remote Content"))
+            .stdout(predicate::str::contains("Stale Local").not());
     });
 }
 
@@ -722,16 +726,10 @@ fn page_append_sign_twice_produces_two_separate_blocks() {
         .assert()
         .success();
 
-    let content = std::fs::read_to_string(dir.path().join("signed.md")).expect("read file");
-    let paragraphs: Vec<&str> = content
-        .split("\n\n")
-        .map(|p| p.trim_end_matches('\n'))
-        .filter(|p| !p.is_empty())
-        .collect();
+    // Each note and each signature is its own block, with no stray blank lines.
     assert_eq!(
-        paragraphs,
-        vec!["First note", "-- @ada", "Second note", "-- @zef"],
-        "each note and each signature must be its own block, got: {content:?}"
+        std::fs::read_to_string(dir.path().join("signed.md")).expect("read file"),
+        "First note\n\n-- @ada\n\nSecond note\n\n-- @zef\n"
     );
 }
 
@@ -789,6 +787,7 @@ fn page_command_rejects_absolute_out_of_space_sync_dir() {
         .expect("sb binary")
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .env_remove("SB_SPACE")
         .args(["page", "list"])
         .assert()
         // A Config error: `general`, exit 1.

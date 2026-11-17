@@ -42,7 +42,9 @@ dir = "."
 fn sb_in(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // SB_SPACE outranks cwd; `template new` would write into a real space.
+        .env_remove("SB_SPACE");
     cmd
 }
 
