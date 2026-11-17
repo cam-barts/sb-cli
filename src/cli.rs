@@ -318,6 +318,25 @@ pub enum Commands {
         #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
         fields: Vec<String>,
     },
+    /// Full-text search across the space (SilverBullet 3.0+, search enabled)
+    Search {
+        /// Words to search for
+        #[arg(required = true, num_args = 1..)]
+        query: Vec<String>,
+        /// How the words match (server default when omitted)
+        #[arg(long)]
+        mode: Option<SearchMode>,
+        /// Which pages to search: `pages` (outside Library/), `tool` (Library/), or `all`
+        #[arg(long)]
+        scope: Option<SearchScope>,
+        /// Maximum number of hits (the server returns at most 50)
+        #[arg(long, default_value_t = 20, value_parser = clap::value_parser!(u16).range(1..=50))]
+        limit: u16,
+        /// Restrict JSON output to these comma-separated fields of each hit
+        /// (`page`, `line`, `heading`, `excerpt`, ...)
+        #[arg(long, value_delimiter = ',', value_name = "FIELD,...")]
+        fields: Vec<String>,
+    },
     /// Work with page templates (pages tagged `meta/template/page`)
     Template {
         #[command(subcommand)]
@@ -403,6 +422,29 @@ pub enum McpCommands {
         #[arg(long, value_name = "HOST:PORT", requires = "http")]
         addr: Option<String>,
     },
+}
+
+/// Sent to the server as-is, so the names are the server's own.
+#[derive(Clone, Copy, Debug, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchMode {
+    /// Every word, in any order
+    Words,
+    /// Natural-language query
+    Natural,
+    /// The exact phrase
+    Phrase,
+}
+
+#[derive(Clone, Copy, Debug, clap::ValueEnum, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchScope {
+    /// Pages outside Library/
+    Pages,
+    /// Library/ pages (tool pages)
+    Tool,
+    /// Everything
+    All,
 }
 
 #[derive(Clone, Copy, Debug, clap::ValueEnum)]

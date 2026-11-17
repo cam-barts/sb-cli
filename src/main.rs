@@ -481,6 +481,26 @@ async fn main() {
             )
             .await
         }
+        Some(Commands::Search {
+            query,
+            mode,
+            scope,
+            limit,
+            fields,
+        }) => {
+            debug!("dispatching: search");
+            commands::search::execute(
+                cli.token.as_deref(),
+                &query.join(" "),
+                mode,
+                scope,
+                limit,
+                &fields,
+                &format,
+                cli.quiet,
+            )
+            .await
+        }
         Some(Commands::Inbox { to, limit, fields }) => {
             debug!("dispatching: inbox");
             commands::inbox::execute(

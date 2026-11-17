@@ -117,6 +117,18 @@ pub enum SbError {
     /// surfaced as a raw 404.
     #[error("revisions are not enabled for this space")]
     RevisionsDisabled,
+
+    /// `/.search/query` answered 404: either the server predates full-text
+    /// search (< 3.0) or no search backend serves this space. Both read the
+    /// same to the caller, and both have the same fix.
+    #[error("full-text search is not available on this server")]
+    SearchUnavailable,
+
+    /// `/.search/query` answered, but not with results: busy (429), failed
+    /// (422), or a 200 that isn't a search result (an auth proxy's login
+    /// page). Carries the server's own message where it sent one.
+    #[error("search failed ({status}): {message}")]
+    SearchFailed { status: u16, message: String },
 }
 
 /// Coarse error category — the single source of truth behind both the process
@@ -148,7 +160,8 @@ impl SbError {
             SbError::NotInitialized
             | SbError::SpaceNotFound { .. }
             | SbError::PageNotFound { .. }
-            | SbError::RevisionsDisabled => ErrorCategory::NotFound,
+            | SbError::RevisionsDisabled
+            | SbError::SearchUnavailable => ErrorCategory::NotFound,
             SbError::AlreadyInitialized { .. }
             | SbError::PageAlreadyExists { .. }
             | SbError::PreconditionFailed { .. } => ErrorCategory::Conflict,
@@ -236,6 +249,11 @@ impl SbError {
             )),
             SbError::RevisionsDisabled => Some(
                 "Set SB_REVISIONS=unmanaged (or managed) on the server to enable page history"
+                    .to_string(),
+            ),
+            SbError::SearchUnavailable => Some(
+                "`sb search` needs SilverBullet 3.0+ with search enabled; \
+                 `sb query` searches the index on older servers"
                     .to_string(),
             ),
             _ => None,
