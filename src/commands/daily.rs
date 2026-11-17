@@ -687,10 +687,7 @@ impl ReadFilters {
                 return false;
             }
         }
-        if self.starred && !e.starred {
-            return false;
-        }
-        true
+        e.starred || !self.starred
     }
 }
 

@@ -588,10 +588,7 @@ impl SbClient {
                 url: url.clone(),
                 source: Box::new(e),
             })?;
-        if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
-            return Ok(false);
-        }
-        Ok(true)
+        Ok(resp.status() != StatusCode::SERVICE_UNAVAILABLE)
     }
 
     /// Retry transient HTTP failures (5xx, timeouts) with exponential backoff.
