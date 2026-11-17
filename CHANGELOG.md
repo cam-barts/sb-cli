@@ -1,3 +1,9 @@
+## v1.11.2 (2026-11-17)
+
+### Fix
+
+- **sync**: print [] for an empty dry-run plan under --quiet --format json (#23)
+
 ## v1.11.1 (2026-11-17)
 
 ### Fix
