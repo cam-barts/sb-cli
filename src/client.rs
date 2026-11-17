@@ -894,13 +894,19 @@ fn status_error(status: StatusCode, url: &str, write: bool) -> Option<SbError> {
 /// Whatever comes back is the server's own digest (`"sha256:<hex>"` today). It is
 /// never interchangeable with the blake3 `local_hash`/`remote_hash` the sync
 /// engine computes.
+///
+/// SilverBullet >= 2.12.1 repeats the revision in `x-silverbullet-revision`,
+/// which proxies leave alone; it wins over `ETag`, which Cloudflare weakens.
 fn etag_from_headers(headers: &HeaderMap) -> Option<String> {
-    let raw = headers.get(header::ETAG)?.to_str().ok()?.trim();
-    if raw.is_empty() || raw.starts_with("W/") {
-        return None;
-    }
-    Some(raw.to_string())
+    [REVISION_HEADER, header::ETAG.as_str()]
+        .into_iter()
+        .filter_map(|name| headers.get(name)?.to_str().ok())
+        .map(str::trim)
+        .find(|raw| !raw.is_empty() && !raw.starts_with("W/"))
+        .map(str::to_string)
 }
+
+const REVISION_HEADER: &str = "x-silverbullet-revision";
 
 /// Log why conditional writes are or are not in play for this response.
 ///
@@ -911,6 +917,10 @@ fn etag_from_headers(headers: &HeaderMap) -> Option<String> {
 /// this to any response it might transform) looks identical to a server with no
 /// conditional-write support unless the message says which happened.
 fn log_etag_outcome(headers: &HeaderMap, path: &str) {
+    let rev = headers.get(REVISION_HEADER).and_then(|v| v.to_str().ok());
+    if let Some(rev) = rev.filter(|r| etag_from_headers(headers).as_deref() == Some(r.trim())) {
+        return tracing::debug!(path, revision = %rev.trim(), "using x-silverbullet-revision");
+    }
     match headers.get(header::ETAG).and_then(|v| v.to_str().ok()) {
         Some(raw) if raw.trim().starts_with("W/") => tracing::debug!(
             path,
@@ -2223,6 +2233,40 @@ mod tests {
             Some("\"sha256:deadbeef\"".to_string()),
             "quotes are part of the validator and must survive the round trip"
         );
+    }
+
+    #[tokio::test]
+    async fn revision_header_survives_a_proxy_weakening_the_etag() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.fs/page.md"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "W/\"sha256:old\"")
+                    .insert_header("X-SilverBullet-Revision", "\"sha256:old\"")
+                    .set_body_string("hi"),
+            )
+            .mount(&server)
+            .await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/page.md"))
+            .and(header("If-Match", "\"sha256:old\""))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("ETag", "W/\"sha256:new\"")
+                    .insert_header("X-SilverBullet-Revision", "\"sha256:new\""),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let (_bytes, etag) = client.get_file("page.md").await.expect("get_file");
+        let new_etag = client
+            .put_file("page.md", bytes::Bytes::from_static(b"x"), etag.as_deref())
+            .await
+            .expect("conditional put should succeed");
+        assert_eq!(new_etag.as_deref(), Some("\"sha256:new\""));
     }
 
     #[test]
