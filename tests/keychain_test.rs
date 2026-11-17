@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use std::fs;
 use tempfile::TempDir;
@@ -27,12 +28,9 @@ keychain = true
     );
     // Run any command that requires auth -- should fail with TokenNotFound
     // listing all checked sources including "OS keychain"
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        // An exported SB_TOKEN wins before the keychain step; SB_SPACE outranks cwd.
-        .env_remove("SB_TOKEN")
-        .env_remove("SB_SPACE")
         .current_dir(dir.path())
         .args(["server", "ping"])
         .assert()
@@ -49,11 +47,9 @@ fn resolve_token_error_omits_keychain_when_disabled() {
 server_url = "https://example.com"
 "#,
     );
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .env_remove("SB_TOKEN")
-        .env_remove("SB_SPACE")
         .current_dir(dir.path())
         .args(["server", "ping"])
         .assert()
@@ -103,7 +99,7 @@ keychain = true
 "#,
     );
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())

@@ -2,6 +2,8 @@
 ///
 /// Uses assert_cmd to run the real binary and assert on exit code, stdout, stderr.
 /// Uses tempfile for isolated, auto-cleaned space directories.
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::io::Write;
@@ -36,12 +38,9 @@ fn write_page(dir: &TempDir, name: &str, content: &str) {
 /// Pins `XDG_CONFIG_HOME` to a non-existent path so the dev's real XDG config
 /// can't leak into the subprocess and contaminate the test.
 fn sb_cmd(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary");
+    let mut cmd = common::sb().expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        // SB_SPACE outranks cwd in find_space_root; a dev shell exporting it
-        // would aim these tests (delete --force, move) at a real space.
-        .env_remove("SB_SPACE");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 
@@ -283,12 +282,11 @@ fn page_list_in_non_initialized_directory_returns_error() {
     let xdg_dir = tempfile::tempdir().expect("create xdg tempdir");
     // Isolate from any real XDG config or SB_SPACE on the developer's machine
 
-    Command::cargo_bin("sb")
+    common::sb()
         .expect("sb binary")
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
-        .env_remove("SB_SPACE")
         .args(["page", "list"])
         .assert()
         .failure()
@@ -369,10 +367,9 @@ fn page_read_remote_fetches_from_server() {
         // A stale local copy: --remote must ignore it and serve the server's.
         std::fs::write(dir.path().join("test-page.md"), "# Stale Local\n").expect("write local");
 
-        Command::cargo_bin("sb")
+        common::sb()
             .expect("sb binary")
             .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-            .env_remove("SB_SPACE")
             .current_dir(dir.path())
             .args(["page", "read", "--remote", "test-page"])
             .assert()
@@ -783,11 +780,10 @@ fn page_command_rejects_absolute_out_of_space_sync_dir() {
     )
     .expect("write config.toml");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .expect("sb binary")
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .env_remove("SB_SPACE")
         .args(["page", "list"])
         .assert()
         // A Config error: `general`, exit 1.

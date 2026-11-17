@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::fs;
@@ -36,7 +37,7 @@ async fn logs_human_format_renders_entries() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs"])
@@ -63,7 +64,7 @@ async fn logs_ndjson_format_emits_one_entry_per_line() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "logs"])
@@ -96,7 +97,7 @@ async fn logs_source_client_filters_out_server_entries() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs", "--source", "client"])
@@ -119,7 +120,7 @@ async fn logs_503_maps_to_runtime_unavailable_message() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["logs"])
@@ -145,7 +146,7 @@ async fn logs_lines_flag_maps_to_limit_query_param() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs", "-n", "5"])
@@ -169,7 +170,7 @@ async fn logs_first_poll_sends_no_since_query_param() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs"])
@@ -190,7 +191,7 @@ async fn logs_with_no_entries_human_prints_friendly_note_on_stderr() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "logs"])
@@ -216,7 +217,7 @@ async fn lua_script_multi_statement_posts_to_lua_script_endpoint() {
     let script_path = dir.path().join("script.lua");
     fs::write(&script_path, "local x = 1\nlocal y = 2\nreturn x + y").unwrap();
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
@@ -244,7 +245,7 @@ async fn lua_script_dash_reads_from_stdin() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "lua", "--script", "-"])
@@ -262,7 +263,7 @@ fn lua_script_and_expression_together_is_a_usage_error() {
     // other parse failure.
     let dir = setup_space("http://localhost:19999", true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "--script", "somefile.lua", "1 + 1"])
@@ -284,7 +285,7 @@ async fn lua_script_missing_file_is_filesystem_error_with_no_http_request() {
     let dir = setup_space(&server.uri(), true);
     let missing_path = dir.path().join("does-not-exist.lua");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "--script", missing_path.to_str().unwrap()])
@@ -313,7 +314,7 @@ async fn lua_script_throws_surfaces_lua_message_not_raw_500() {
     let script_path = dir.path().join("bad.lua");
     fs::write(&script_path, "nope()\nreturn 1").unwrap();
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["lua", "--script", script_path.to_str().unwrap()])
@@ -342,7 +343,7 @@ async fn screenshot_writes_png_to_specified_path() {
     let dir = setup_space(&server.uri(), true);
     let out_path = dir.path().join("shot.png");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
@@ -377,7 +378,7 @@ async fn screenshot_dash_writes_png_to_stdout() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    let out = Command::cargo_bin("sb")
+    let out = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "screenshot", "--output", "-"])
@@ -408,7 +409,7 @@ async fn screenshot_json_format_emits_envelope_with_path() {
     let dir = setup_space(&server.uri(), true);
     let out_path = dir.path().join("envelope.png");
 
-    let stdout = Command::cargo_bin("sb")
+    let stdout = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args([
@@ -435,7 +436,7 @@ async fn screenshot_json_format_emits_envelope_with_path() {
 #[tokio::test]
 async fn screenshot_json_with_stdout_dash_is_usage_error() {
     let dir = setup_space("http://localhost:19999", true);
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "screenshot", "--output", "-"])
@@ -461,7 +462,7 @@ async fn describe_renders_field_table_in_human_format() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "describe", "task"])
@@ -488,7 +489,7 @@ async fn describe_json_format_returns_structured_payload() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    let stdout = Command::cargo_bin("sb")
+    let stdout = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "describe", "page"])
@@ -508,7 +509,7 @@ async fn describe_json_format_returns_structured_payload() {
 #[tokio::test]
 async fn describe_rejects_tag_with_unsafe_characters() {
     let dir = setup_space("http://localhost:19999", true);
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["describe", "foo\"bar"])
@@ -533,7 +534,7 @@ async fn describe_sends_lua_script_with_tag_and_limit() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "describe", "template", "--limit", "7"])
@@ -548,7 +549,7 @@ async fn describe_sends_lua_script_with_tag_and_limit() {
 #[tokio::test]
 async fn describe_runtime_unavailable_prints_docs_link() {
     let dir = setup_space("http://localhost:19999", false);
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["describe", "task"])
@@ -574,7 +575,7 @@ async fn describe_zero_sampled_human_prints_nothing_to_describe_on_stderr() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "describe", "missing"])
@@ -602,7 +603,7 @@ async fn describe_without_tag_sends_full_row_tally_probe_and_lists_tags() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    let stdout = Command::cargo_bin("sb")
+    let stdout = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "describe"])

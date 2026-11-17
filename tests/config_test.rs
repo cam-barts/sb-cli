@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use std::fs;
 
@@ -20,7 +21,7 @@ token = "secret123"
 "#,
     );
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "config", "show"])
@@ -38,7 +39,7 @@ token = "secret123"
 fn config_show_env_override() {
     let dir = setup_config_dir("");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "config", "show"])
@@ -57,13 +58,12 @@ fn config_show_defaults_when_no_config() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let xdg_dir = tempfile::tempdir().expect("create xdg tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "human", "config", "show"])
         .current_dir(dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
-        .env_remove("SB_SPACE")
         .assert()
         .success()
         .stdout(
@@ -82,7 +82,7 @@ token = "secret123"
 "#,
     );
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "config", "show"])
@@ -117,13 +117,9 @@ token = "secret123"
 "#,
     );
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        // Never let a dev shell's space or token reach a --reveal run: a
-        // failure would print the real token into the test log.
-        .env_remove("SB_SPACE")
-        .env_remove("SB_TOKEN")
         .args(["--format", "human", "config", "show", "--reveal"])
         .current_dir(dir.path())
         .assert()
@@ -139,7 +135,7 @@ token = "mysecrettoken"
 "#,
     );
 
-    let output = Command::cargo_bin("sb")
+    let output = common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--format", "json", "config", "show", "--reveal"])
@@ -163,7 +159,7 @@ server_url = "https://sb.test"
 "#,
     );
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--quiet", "config", "show"])

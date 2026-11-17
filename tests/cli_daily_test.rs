@@ -2,6 +2,8 @@
 ///
 /// Tests verify observable behavior: file creation, path resolution, content appending,
 /// date arithmetic, and error cases. No implementation details are tested.
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use std::io::Write;
@@ -32,11 +34,9 @@ fn default_space() -> TempDir {
 /// Also pins `XDG_CONFIG_HOME` to a path that doesn't exist so the developer's
 /// real `~/.config/sb/config.toml` can't leak into the subprocess.
 fn sb_in(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary must exist");
+    let mut cmd = common::sb().expect("sb binary must exist");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        // SB_SPACE outranks cwd; never let a dev shell's value leak in.
-        .env_remove("SB_SPACE");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 

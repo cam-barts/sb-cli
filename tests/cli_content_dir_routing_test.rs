@@ -11,6 +11,8 @@
 //!
 //! If a new command is added that writes to a page path, add it here.
 
+mod common;
+
 use assert_cmd::Command;
 use std::path::Path;
 use tempfile::TempDir;
@@ -38,11 +40,9 @@ dir = "content"
 }
 
 fn sb_in(dir: &TempDir) -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary");
+    let mut cmd = common::sb().expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        // SB_SPACE outranks cwd; never let a dev shell's value leak in.
-        .env_remove("SB_SPACE");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd
 }
 

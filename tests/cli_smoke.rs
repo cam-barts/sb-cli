@@ -1,9 +1,10 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 
 #[test]
 fn version_subcommand_prints_version_info() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .arg("version")
@@ -17,7 +18,7 @@ fn version_subcommand_prints_version_info() {
 
 #[test]
 fn version_flag_prints_compact() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .arg("--version")
@@ -29,7 +30,7 @@ fn version_flag_prints_compact() {
 #[test]
 fn unknown_subcommand_or_flag_exits_2() {
     for arg in ["nonexistent", "--nonexistent-flag"] {
-        Command::cargo_bin("sb")
+        common::sb()
             .unwrap()
             .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
             .arg(arg)
@@ -40,7 +41,7 @@ fn unknown_subcommand_or_flag_exits_2() {
 
 #[test]
 fn quiet_flag_suppresses_version_output() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["--quiet", "version"])
@@ -51,7 +52,7 @@ fn quiet_flag_suppresses_version_output() {
 
 #[test]
 fn no_subcommand_shows_help() {
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .assert()
