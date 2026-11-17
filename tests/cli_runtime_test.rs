@@ -42,6 +42,33 @@ async fn lua_eval_returns_result_on_200() {
         .stdout(predicate::str::contains("42"));
 }
 
+// With X-Await-Index the server may spend up to 5s catching up its index
+// before its own X-Timeout budget starts. The client must still be listening
+// when an answer arrives inside that window.
+#[tokio::test]
+async fn lua_waits_out_the_index_catch_up_on_top_of_the_timeout() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"result": 42}"#)
+                .set_delay(std::time::Duration::from_secs(2)),
+        )
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--timeout", "1", "lua", "2 + 2"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("42"));
+}
+
 #[tokio::test]
 async fn lua_eval_reports_lua_error() {
     let server = MockServer::start().await;

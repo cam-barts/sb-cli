@@ -19,6 +19,20 @@ static TIMEOUT_SECS: AtomicU64 = AtomicU64::new(DEFAULT_TIMEOUT_SECS);
 /// Matches the Runtime API's own documented default.
 pub const DEFAULT_TIMEOUT_SECS: u64 = 30;
 
+/// Asks SilverBullet 3.0+ to index pending file changes before a runtime call,
+/// so a query sees a page sb just wrote. Older servers ignore it.
+const AWAIT_INDEX_HEADER: &str = "X-Await-Index";
+
+/// The server's cap on that catch-up. It runs *before* the `X-Timeout` budget
+/// starts, so reqwest must wait this much longer than `X-Timeout` or it hangs
+/// up on a server that is still within its limits.
+const INDEX_CATCH_UP_SECS: u64 = 5;
+
+/// reqwest's timeout for a runtime POST: `X-Timeout` plus the catch-up.
+fn runtime_request_timeout() -> Duration {
+    Duration::from_secs(timeout_secs() + INDEX_CATCH_UP_SECS)
+}
+
 /// Record the `--timeout` flag. Call once during startup.
 pub fn set_timeout_secs(secs: u64) {
     TIMEOUT_SECS.store(secs, Ordering::Relaxed);
@@ -437,8 +451,9 @@ impl SbClient {
     /// Uses `send_with_retry` internally for timeout resilience.
     ///
     /// Sends `X-Timeout`, which the Runtime API honors for its Lua endpoints,
-    /// so the server gives up at the same moment reqwest does rather than one
-    /// silently racing the other.
+    /// and gives reqwest that plus the index catch-up (see
+    /// `runtime_request_timeout`), so the server gives up first and reports why
+    /// instead of the two silently racing.
     pub async fn post_text(&self, endpoint: &str, body: &str) -> SbResult<reqwest::Response> {
         let url = format!("{}{}", self.base_url, endpoint);
         let body_bytes = bytes::Bytes::from(body.to_string());
@@ -446,8 +461,10 @@ impl SbClient {
         self.send_with_retry(&url, || {
             self.inner
                 .post(&url)
+                .timeout(runtime_request_timeout())
                 .header(header::CONTENT_TYPE, "text/plain")
                 .header("X-Timeout", timeout)
+                .header(AWAIT_INDEX_HEADER, "1")
                 .body(body_bytes.clone())
         })
         .await
@@ -467,8 +484,10 @@ impl SbClient {
         let url = format!("{}{}", self.base_url, endpoint);
         self.inner
             .post(&url)
+            .timeout(runtime_request_timeout())
             .header(header::CONTENT_TYPE, "text/plain")
             .header("X-Timeout", timeout_secs())
+            .header(AWAIT_INDEX_HEADER, "1")
             .body(bytes::Bytes::from(body.to_string()))
             .send()
             .await
@@ -1603,6 +1622,26 @@ mod tests {
         let result = client.post_text("/.runtime/lua", "1 + 1").await;
         assert!(result.is_ok(), "post_text should succeed: {result:?}");
         // MockServer verifies expect(1) on drop
+    }
+
+    #[tokio::test]
+    async fn runtime_posts_ask_the_server_to_catch_up_its_index() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(header("X-Await-Index", "1"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{\"result\":2}"))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .post_text("/.runtime/lua", "1 + 1")
+            .await
+            .expect("post_text");
+        crate::runtime::eval(&client, "/.runtime/lua", "1 + 1")
+            .await
+            .expect("eval, via post_text_once");
     }
 
     // --- encode_path tests ---
