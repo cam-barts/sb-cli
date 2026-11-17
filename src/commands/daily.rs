@@ -875,7 +875,7 @@ mod tests {
         let DatePrefix::Iso(d) = p else {
             panic!("expected Iso variant")
         };
-        assert_eq!(d.year(), 2026);
+        assert_eq!(d, jiff::civil::date(2026, 5, 15));
         assert_eq!(rest, "backfilled");
     }
 
@@ -1076,26 +1076,30 @@ mod tests {
     #[test]
     fn parse_iso_date_valid() {
         let d = parse_iso_date("2026-05-18").unwrap();
-        assert_eq!(d.year(), 2026);
+        assert_eq!(d, jiff::civil::date(2026, 5, 18));
     }
 
     #[test]
     fn parse_iso_date_invalid() {
-        assert!(parse_iso_date("not-a-date").is_err());
-        assert!(parse_iso_date("2026/05/18").is_err());
+        for s in ["not-a-date", "2026/05/18"] {
+            assert!(
+                matches!(parse_iso_date(s), Err(SbError::Usage(_))),
+                "{s:?} should be a usage error"
+            );
+        }
     }
 
     #[test]
-    fn validate_time_hhmm_accepts_valid() {
-        assert!(validate_time_hhmm("14:32").is_ok());
-        assert!(validate_time_hhmm("00:00").is_ok());
-        assert!(validate_time_hhmm("23:59").is_ok());
-    }
-
-    #[test]
-    fn validate_time_hhmm_rejects_invalid() {
-        assert!(validate_time_hhmm("25:00").is_err());
-        assert!(validate_time_hhmm("not-a-time").is_err());
+    fn validate_time_hhmm_accepts_bounds_and_rejects_out_of_range() {
+        for s in ["14:32", "00:00", "23:59"] {
+            assert!(validate_time_hhmm(s).is_ok(), "{s:?} should be accepted");
+        }
+        for s in ["25:00", "12:60", "not-a-time"] {
+            assert!(
+                matches!(validate_time_hhmm(s), Err(SbError::Usage(_))),
+                "{s:?} should be a usage error"
+            );
+        }
     }
 
     #[test]
@@ -1687,30 +1691,6 @@ dateFormat = "%Y-%m-%d"
     }
 
     #[tokio::test]
-    async fn execute_write_with_sign_appends_signature_inline_on_the_bullet() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = minimal_config(tmp.path());
-        let fmt = OutputFormat::Human;
-        let mut args = default_args(&fmt);
-        args.entry = vec!["Finished".into(), "the".into(), "spike".into()];
-        args.no_time = true;
-        let signers = vec!["ada".to_string(), "zef".to_string()];
-        args.sign = &signers;
-
-        super::execute_write_or_editor(tmp.path(), &config, &args, false)
-            .await
-            .unwrap();
-
-        let today = jiff::Zoned::now().date().strftime("%Y-%m-%d").to_string();
-        let written =
-            std::fs::read_to_string(tmp.path().join("Journal").join(format!("{}.md", today)))
-                .unwrap();
-        // Same bullet, not a new line: the entry is a list item, so the
-        // signature terminates it inline.
-        assert_eq!(written, "* Finished the spike -- @ada @zef\n");
-    }
-
-    #[tokio::test]
     async fn execute_write_routes_via_date_prefix() {
         let tmp = tempfile::tempdir().unwrap();
         let config = minimal_config(tmp.path());
@@ -1835,77 +1815,6 @@ dateFormat = "%Y-%m-%d"
             std::fs::read_to_string(tmp.path().join("Journal").join(format!("{}.md", today)))
                 .unwrap();
         assert_eq!(written, "* [time:: 09:00] legacy entry\n");
-    }
-
-    #[tokio::test]
-    async fn execute_write_appends_to_existing_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = minimal_config(tmp.path());
-        seed_journal(
-            tmp.path(),
-            &format!("{}.md", jiff::Zoned::now().date().strftime("%Y-%m-%d")),
-            "* [time:: 08:00] existing\n",
-        );
-        let fmt = OutputFormat::Human;
-        let mut args = default_args(&fmt);
-        args.entry = vec!["new".into(), "entry".into()];
-        args.time = Some("10:00");
-
-        super::execute_write_or_editor(tmp.path(), &config, &args, false)
-            .await
-            .unwrap();
-
-        let today = jiff::Zoned::now().date().strftime("%Y-%m-%d").to_string();
-        let written =
-            std::fs::read_to_string(tmp.path().join("Journal").join(format!("{}.md", today)))
-                .unwrap();
-        assert_eq!(
-            written,
-            "* [time:: 08:00] existing\n* [time:: 10:00] new entry\n"
-        );
-    }
-
-    // --- template handling: local-file branch of fetch_template_content ---
-
-    #[tokio::test]
-    async fn ensure_day_file_applies_local_template_when_configured() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join(".sb")).unwrap();
-        std::fs::write(
-            tmp.path().join(".sb").join("config.toml"),
-            r#"[daily]
-path = "Journal/{{date}}"
-dateFormat = "%Y-%m-%d"
-template = "Daily"
-"#,
-        )
-        .unwrap();
-        // Local template file
-        std::fs::write(
-            tmp.path().join("Daily.md"),
-            "# Daily template\n\n## Notes\n",
-        )
-        .unwrap();
-
-        let config = ResolvedConfig::load_from(tmp.path()).unwrap();
-        let page_path = tmp.path().join("Journal").join("2026-05-18.md");
-        let created = ensure_day_file(&page_path, tmp.path(), &config, None)
-            .await
-            .unwrap();
-        assert!(created);
-        let content = std::fs::read_to_string(&page_path).unwrap();
-        assert_eq!(content, "# Daily template\n\n## Notes\n");
-    }
-
-    #[tokio::test]
-    async fn fetch_template_content_local_file_wins() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::write(tmp.path().join("MyTemplate.md"), "local body").unwrap();
-        let config = minimal_config(tmp.path());
-        let got = super::fetch_template_content(tmp.path(), "MyTemplate", &config, None)
-            .await
-            .unwrap();
-        assert_eq!(got.as_deref(), Some("local body"));
     }
 
     #[tokio::test]

@@ -1006,6 +1006,11 @@ mod tests {
         );
         assert_eq!(etag_from_headers(&h), None);
 
+        // An empty validator is no validator either.
+        let mut h = HeaderMap::new();
+        h.insert(header::ETAG, HeaderValue::from_static(""));
+        assert_eq!(etag_from_headers(&h), None);
+
         // ...while the same tag unweakened is accepted verbatim, quotes and all.
         let mut h = HeaderMap::new();
         h.insert(
@@ -1044,60 +1049,27 @@ mod tests {
         assert_eq!(files[0].perm, Some("rw".to_string()));
     }
 
+    /// Retries are exhausted on a persistent 5xx: the original attempt plus
+    /// three retries, then the status surfaces. (Costs ~7s of real backoff, so
+    /// it is the only GET exhaustion test.)
     #[tokio::test]
-    async fn list_files_returns_auth_failed_on_401() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.fs"))
-            .respond_with(ResponseTemplate::new(401))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "bad-token");
-        let result = client.list_files().await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SbError::AuthFailed { status, .. } => assert_eq!(status, 401),
-            other => panic!("expected AuthFailed, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn list_files_returns_http_status_on_500() {
+    async fn a_persistent_5xx_is_retried_three_times_then_surfaces_as_http_status() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/.fs"))
             .respond_with(ResponseTemplate::new(500))
+            .expect(4)
             .mount(&server)
             .await;
 
         let client = make_client(&server.uri(), "testtoken");
-        let result = client.list_files().await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
+        match client.list_files().await.unwrap_err() {
             SbError::HttpStatus { status, .. } => assert_eq!(status, 500),
             other => panic!("expected HttpStatus, got: {other:?}"),
         }
     }
 
     // --- get_file tests ---
-
-    #[tokio::test]
-    async fn get_file_returns_bytes_on_200() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.fs/notes/page.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("# My Page\n\nContent here."))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let result = client.get_file("notes/page.md").await;
-        assert!(result.is_ok(), "get_file should succeed: {result:?}");
-        let (bytes, _etag) = result.unwrap();
-        let text = std::str::from_utf8(&bytes).expect("valid utf8");
-        assert!(text.contains("My Page"));
-    }
 
     #[tokio::test]
     async fn get_file_returns_page_not_found_on_404() {
@@ -1174,23 +1146,6 @@ mod tests {
     // --- put_file tests ---
 
     #[tokio::test]
-    async fn put_file_sends_put_and_succeeds_on_200() {
-        let server = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(path("/.fs/notes/page.md"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let content = b"# My Page\n\nContent.".to_vec();
-        let result = client
-            .put_file("notes/page.md", bytes::Bytes::from(content), None)
-            .await;
-        assert!(result.is_ok(), "put_file should succeed: {result:?}");
-    }
-
-    #[tokio::test]
     async fn put_file_sends_text_markdown_content_type_for_md_files() {
         let server = MockServer::start().await;
         Mock::given(method("PUT"))
@@ -1246,74 +1201,12 @@ mod tests {
     // --- header verification for new methods ---
 
     #[tokio::test]
-    async fn list_files_sends_x_sync_mode_and_authorization() {
+    async fn every_request_sends_sync_mode_and_bearer_token() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
-            .and(path("/.fs"))
+            .and(path("/.ping"))
             .and(header("X-Sync-Mode", "true"))
             .and(header("Authorization", "Bearer testtoken"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        client
-            .list_files()
-            .await
-            .expect("list_files should succeed with correct headers");
-    }
-
-    #[tokio::test]
-    async fn new_with_valid_token_succeeds() {
-        let client = SbClient::new("http://localhost:1234", "testtoken");
-        assert!(client.is_ok());
-    }
-
-    #[tokio::test]
-    async fn new_with_empty_token_succeeds() {
-        let client = SbClient::new("http://localhost:1234", "");
-        assert!(client.is_ok());
-    }
-
-    #[tokio::test]
-    async fn ping_returns_duration_on_200() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let result = client.ping().await;
-        assert!(result.is_ok(), "ping should succeed: {result:?}");
-    }
-
-    #[tokio::test]
-    async fn ping_returns_http_status_error_on_500() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .respond_with(ResponseTemplate::new(500))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let result = client.ping().await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SbError::HttpStatus { status, .. } => assert_eq!(status, 500),
-            other => panic!("expected HttpStatus, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn every_request_sends_x_sync_mode_true() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .and(header("X-Sync-Mode", "true"))
             .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
             .expect(1)
             .mount(&server)
@@ -1324,19 +1217,28 @@ mod tests {
         // MockServer verifies expect(1) on drop
     }
 
+    /// An empty token means a no-auth server: sending `Authorization: Bearer `
+    /// anyway would be rejected by some proxies.
     #[tokio::test]
-    async fn every_request_sends_authorization_bearer() {
+    async fn an_empty_token_sends_no_authorization_header() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/.ping"))
-            .and(header("Authorization", "Bearer testtoken"))
+            .and(wiremock::matchers::header_exists("Authorization"))
+            .respond_with(ResponseTemplate::new(401))
+            .expect(0)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.ping"))
+            .and(header("X-Sync-Mode", "true"))
             .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
             .expect(1)
             .mount(&server)
             .await;
 
-        let client = make_client(&server.uri(), "testtoken");
-        client.ping().await.expect("request should succeed");
+        let client = make_client(&server.uri(), "");
+        client.ping().await.expect("ping without a token");
     }
 
     #[tokio::test]
@@ -1436,6 +1338,7 @@ mod tests {
             .put_file("Library/Std/Config.md", Bytes::from_static(b"x"), None)
             .await
             .unwrap_err();
+        assert_ne!(err.exit_code(), 3, "read-only is not an auth failure");
         match err {
             SbError::ReadOnly { url } => assert!(url.contains("Library/Std/Config.md")),
             other => panic!("expected ReadOnly, got: {other:?}"),
@@ -1473,10 +1376,60 @@ mod tests {
             .await;
 
         let client = make_client(&server.uri(), "testtoken");
-        match client.get_config().await.unwrap_err() {
+        let err = client.get_config().await.unwrap_err();
+        assert_eq!(err.exit_code(), 5, "412 is a conflict");
+        match err {
             SbError::PreconditionFailed { url } => assert!(url.contains("/.config")),
             other => panic!("expected PreconditionFailed, got: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn a_412_on_a_conditional_write_is_a_conflict_exit_5() {
+        // Writes go through check_response_write, a different path from the
+        // read above; this is the 412 a stale If-Match actually produces.
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/note.md"))
+            .and(header("If-Match", "\"sha256:stale\""))
+            .respond_with(ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .put_file(
+                "note.md",
+                Bytes::from_static(b"x"),
+                Some("\"sha256:stale\""),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "412 is a conflict");
+        assert!(
+            matches!(err, SbError::PreconditionFailed { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_puts_limit_and_since_on_the_wire() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .and(query_param("limit", "50"))
+            .and(query_param("since", "1700000000000"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .get_runtime_logs(Some(50), Some(1_700_000_000_000))
+            .await
+            .expect("limit and since must both reach the server");
     }
 
     #[tokio::test]
@@ -1538,62 +1491,27 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn get_page_returns_auth_failed_on_401() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.fs/secret.md"))
-            .respond_with(ResponseTemplate::new(401))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "bad-token");
-        let result = client.get_page("secret").await;
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SbError::AuthFailed { status, .. } => assert_eq!(status, 401),
-            other => panic!("expected AuthFailed, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn get_page_sends_x_sync_mode_and_authorization_headers() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.fs/test-page.md"))
-            .and(header("X-Sync-Mode", "true"))
-            .and(header("Authorization", "Bearer testtoken"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("content"))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        client
-            .get_page("test-page")
-            .await
-            .expect("get_page should succeed with correct headers");
-        // MockServer verifies expect(1) on drop
-    }
-
     // --- probe_runtime_api tests ---
 
+    /// Anything but 503 means the endpoint exists: 400 (our probe body is
+    /// deliberately empty) and 200 both count as available.
     #[tokio::test]
-    async fn probe_runtime_api_returns_true_on_400() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua"))
-            .respond_with(ResponseTemplate::new(400))
-            .mount(&server)
-            .await;
+    async fn probe_runtime_api_returns_true_unless_503() {
+        for status in [200u16, 400] {
+            let server = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua"))
+                .respond_with(ResponseTemplate::new(status))
+                .mount(&server)
+                .await;
 
-        let client = make_client(&server.uri(), "testtoken");
-        let result = client.probe_runtime_api().await;
-        assert!(result.is_ok(), "probe should succeed: {result:?}");
-        assert!(
-            result.unwrap(),
-            "400 means endpoint exists, should return true"
-        );
+            let client = make_client(&server.uri(), "testtoken");
+            let result = client.probe_runtime_api().await;
+            assert!(
+                matches!(result, Ok(true)),
+                "{status} means the endpoint exists, got: {result:?}"
+            );
+        }
     }
 
     #[tokio::test]
@@ -1612,21 +1530,6 @@ mod tests {
             !result.unwrap(),
             "503 means unavailable, should return false"
         );
-    }
-
-    #[tokio::test]
-    async fn probe_runtime_api_returns_true_on_200() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("ok"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let result = client.probe_runtime_api().await;
-        assert!(result.is_ok(), "probe should succeed: {result:?}");
-        assert!(result.unwrap(), "200 means available, should return true");
     }
 
     #[tokio::test]
@@ -1687,14 +1590,6 @@ mod tests {
     }
 
     #[test]
-    fn encode_path_encodes_space() {
-        assert_eq!(
-            encode_path("My Notes/Some Page.md"),
-            "My%20Notes/Some%20Page.md"
-        );
-    }
-
-    #[test]
     fn encode_path_preserves_slash_separator() {
         // Slashes must NOT be encoded — they are path separators
         assert_eq!(encode_path("a/b/c.md"), "a/b/c.md");
@@ -1748,102 +1643,47 @@ mod tests {
     // --- send_with_retry tests ---
 
     #[tokio::test]
-    async fn send_with_retry_succeeds_on_200_without_retry() {
+    async fn a_transient_5xx_is_retried_and_the_next_200_wins() {
         let server = MockServer::start().await;
+        // Earliest-mounted match wins: the 500 answers one request, then is
+        // exhausted and the 200 takes over. (The old private-fn version mounted
+        // them the other way round, so its 500 never fired and no retry ran.)
         Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
-            .expect(1) // must only be called once (no retry)
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let url = format!("{}/.ping", server.uri());
-        let result = client
-            .send_with_retry(&url, || client.inner.get(&url))
-            .await;
-        assert!(
-            result.is_ok(),
-            "200 should succeed without retry: {result:?}"
-        );
-        assert_eq!(result.unwrap().status().as_u16(), 200);
-        // MockServer verifies expect(1) on drop
-    }
-
-    #[tokio::test]
-    async fn send_with_retry_retries_500_and_succeeds_on_second_try() {
-        let server = MockServer::start().await;
-        // Mount 200 first (lower priority), then 500 with up_to_n_times(1) (higher priority)
-        // After the 500 is consumed, the 200 takes effect
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("OK"))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
+            .and(path("/.fs"))
             .respond_with(ResponseTemplate::new(500))
             .up_to_n_times(1)
+            .expect(1)
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("[]"))
+            .expect(1)
             .mount(&server)
             .await;
 
         let client = make_client(&server.uri(), "testtoken");
-        let url = format!("{}/.ping", server.uri());
-        let result = client
-            .send_with_retry(&url, || client.inner.get(&url))
-            .await;
-        assert!(
-            result.is_ok(),
-            "should succeed on second attempt: {result:?}"
-        );
-        assert_eq!(result.unwrap().status().as_u16(), 200);
+        let files = client.list_files().await.expect("recovers on 2nd attempt");
+        assert!(files.is_empty());
     }
 
+    /// A 4xx is the caller's problem; replaying it cannot help.
     #[tokio::test]
-    async fn send_with_retry_gives_up_after_3_retries_on_503() {
+    async fn a_4xx_is_not_retried() {
         let server = MockServer::start().await;
-        // All 4 attempts (initial + 3 retries) return 503
         Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .respond_with(ResponseTemplate::new(503))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let url = format!("{}/.ping", server.uri());
-        let result = client
-            .send_with_retry(&url, || client.inner.get(&url))
-            .await;
-        assert!(result.is_err(), "should fail after 3 retries exhausted");
-        match result.unwrap_err() {
-            SbError::HttpStatus { status, .. } => assert_eq!(status, 503),
-            other => panic!("expected HttpStatus(503), got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn send_with_retry_does_not_retry_on_400() {
-        let server = MockServer::start().await;
-        // 400 is a client error — must not retry, only called once
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
+            .and(path("/.fs"))
             .respond_with(ResponseTemplate::new(400))
             .expect(1)
             .mount(&server)
             .await;
 
         let client = make_client(&server.uri(), "testtoken");
-        let url = format!("{}/.ping", server.uri());
-        let result = client
-            .send_with_retry(&url, || client.inner.get(&url))
-            .await;
-        // 400 is not a 5xx, so send_with_retry returns Ok(resp) immediately
-        assert!(
-            result.is_ok(),
-            "400 should be returned as Ok(resp) immediately"
-        );
-        assert_eq!(result.unwrap().status().as_u16(), 400);
-        // MockServer verifies expect(1) on drop — ensures no retry happened
+        match client.list_files().await.unwrap_err() {
+            SbError::HttpStatus { status, .. } => assert_eq!(status, 400),
+            other => panic!("expected HttpStatus(400), got: {other:?}"),
+        }
+        // MockServer verifies expect(1) on drop: a retry would make it 2.
     }
 
     // --- get_runtime_logs tests ---
@@ -1945,23 +1785,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn get_runtime_logs_sends_limit_as_query_param() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.runtime/logs"))
-            .and(query_param("limit", "20"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        client
-            .get_runtime_logs(Some(20), None)
-            .await
-            .expect("mock only matches the request carrying limit=20");
-    }
-
-    #[tokio::test]
     async fn get_runtime_logs_first_poll_omits_since() {
         let server = MockServer::start().await;
         // Constraining the mock on the missing param IS the assertion: a request
@@ -1978,23 +1801,6 @@ mod tests {
             .get_runtime_logs(None, None)
             .await
             .expect("first poll must not send since");
-    }
-
-    #[tokio::test]
-    async fn get_runtime_logs_sends_since_once_high_water_known() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.runtime/logs"))
-            .and(query_param("since", "1700000000000"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        client
-            .get_runtime_logs(None, Some(1700000000000))
-            .await
-            .expect("mock only matches the request carrying since");
     }
 
     // --- get_runtime_screenshot tests ---
@@ -2044,30 +1850,6 @@ mod tests {
             }
             other => panic!("expected HttpStatus(503), got: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn send_with_retry_does_not_retry_on_401() {
-        let server = MockServer::start().await;
-        // 401 is not a 5xx — returned immediately as Ok(resp)
-        Mock::given(method("GET"))
-            .and(path("/.ping"))
-            .respond_with(ResponseTemplate::new(401))
-            .expect(1)
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let url = format!("{}/.ping", server.uri());
-        let result = client
-            .send_with_retry(&url, || client.inner.get(&url))
-            .await;
-        assert!(
-            result.is_ok(),
-            "401 should be returned as Ok(resp) immediately"
-        );
-        assert_eq!(result.unwrap().status().as_u16(), 401);
-        // MockServer verifies expect(1) on drop
     }
 
     // --- get_file_revisions tests ---
@@ -2287,25 +2069,6 @@ mod tests {
 
     // --- ETag / conditional writes ---
 
-    fn headers_with(name: &str, value: &str) -> HeaderMap {
-        let mut h = HeaderMap::new();
-        h.insert(
-            reqwest::header::HeaderName::from_bytes(name.as_bytes()).unwrap(),
-            HeaderValue::from_str(value).unwrap(),
-        );
-        h
-    }
-
-    #[test]
-    fn etag_is_taken_verbatim_so_it_can_be_echoed_back() {
-        let h = headers_with("ETag", "\"sha256:deadbeef\"");
-        assert_eq!(
-            etag_from_headers(&h),
-            Some("\"sha256:deadbeef\"".to_string()),
-            "quotes are part of the validator and must survive the round trip"
-        );
-    }
-
     #[tokio::test]
     async fn revision_header_survives_a_proxy_weakening_the_etag() {
         let server = MockServer::start().await;
@@ -2344,39 +2107,6 @@ mod tests {
     fn missing_etag_header_yields_none() {
         // The 2.10.0 server: no ETag, so nothing to send back as If-Match.
         assert_eq!(etag_from_headers(&HeaderMap::new()), None);
-    }
-
-    #[test]
-    fn empty_and_weak_etags_are_rejected() {
-        assert_eq!(etag_from_headers(&headers_with("ETag", "")), None);
-        assert_eq!(
-            etag_from_headers(&headers_with("ETag", "W/\"sha256:abc\"")),
-            None,
-            "a weak validator is not usable in If-Match"
-        );
-    }
-
-    /// A 403 means "read-only path" only when we were writing. On a read it is
-    /// almost certainly an auth proxy rejecting the identity, and reporting
-    /// "your token is fine" would send the user the wrong way.
-    #[test]
-    fn a_403_is_read_only_only_for_writes() {
-        let url = "http://localhost:3000/.fs/page.md";
-        assert!(matches!(
-            status_error(StatusCode::FORBIDDEN, url, true),
-            Some(SbError::ReadOnly { .. })
-        ));
-        assert!(matches!(
-            status_error(StatusCode::FORBIDDEN, url, false),
-            Some(SbError::AuthFailed { status: 403, .. })
-        ));
-        // The read mapping keeps the auth exit code a caller can branch on.
-        assert_eq!(
-            status_error(StatusCode::FORBIDDEN, url, false)
-                .unwrap()
-                .exit_code(),
-            3
-        );
     }
 
     #[test]
@@ -2489,50 +2219,6 @@ mod tests {
             .await
             .expect("unconditional put should succeed");
         assert_eq!(etag, None, "server sent no ETag, so we store none");
-    }
-
-    #[tokio::test]
-    async fn put_file_returns_precondition_failed_on_412() {
-        let server = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(path("/.fs/page.md"))
-            .respond_with(ResponseTemplate::new(412))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let err = client
-            .put_file(
-                "page.md",
-                bytes::Bytes::from_static(b"hi"),
-                Some("\"sha256:stale\""),
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, SbError::PreconditionFailed { .. }));
-        assert_eq!(err.exit_code(), 5, "412 is a conflict");
-    }
-
-    #[tokio::test]
-    async fn put_file_returns_read_only_on_403() {
-        let server = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(path("/.fs/Library/Std/page.md"))
-            .respond_with(ResponseTemplate::new(403))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri(), "testtoken");
-        let err = client
-            .put_file(
-                "Library/Std/page.md",
-                bytes::Bytes::from_static(b"hi"),
-                None,
-            )
-            .await
-            .unwrap_err();
-        assert!(matches!(err, SbError::ReadOnly { .. }));
-        assert_ne!(err.exit_code(), 3, "read-only is not an auth failure");
     }
 
     #[tokio::test]

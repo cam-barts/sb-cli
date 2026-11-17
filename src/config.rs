@@ -848,6 +848,42 @@ mod tests {
 
         assert!(!config.auth_keychain.value);
         assert_eq!(config.auth_keychain.source, ConfigSource::Default);
+
+        assert_eq!(config.server_url.source, ConfigSource::Default);
+        assert!(config.server_url.value.is_none());
+
+        assert_eq!(config.token.source, ConfigSource::Default);
+        assert!(config.token.value.is_none());
+
+        assert!(!config.runtime_available.value);
+        assert_eq!(config.runtime_available.source, ConfigSource::Default);
+
+        assert_eq!(config.daily_time_format.value, "%H:%M");
+        assert_eq!(config.daily_time_format.source, ConfigSource::Default);
+
+        assert_eq!(config.daily_bullet_style.value, "*");
+        assert_eq!(config.daily_bullet_style.source, ConfigSource::Default);
+
+        assert_eq!(config.daily_task_tag.value, "task");
+        assert_eq!(config.daily_task_tag.source, ConfigSource::Default);
+        assert_eq!(config.daily_task_tag_mode.value, "auto");
+        assert_eq!(config.daily_task_tag_mode.source, ConfigSource::Default);
+
+        assert!(config.template_dir.value.is_none());
+        assert!(config.template_default.value.is_none());
+        assert_eq!(config.template_dir.source, ConfigSource::Default);
+    }
+
+    /// A config file that exists but never mentions `[template]` still yields
+    /// the unset defaults (a different path from "no file at all").
+    #[test]
+    fn a_config_file_without_a_template_section_leaves_template_unset() {
+        let _g = EnvTestGuard::new();
+        let dir = setup_config_dir("server_url = \"https://example.com\"\n");
+        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
+        assert!(config.template_dir.value.is_none());
+        assert!(config.template_default.value.is_none());
+        assert_eq!(config.template_dir.source, ConfigSource::Default);
     }
 
     #[test]
@@ -914,41 +950,6 @@ workers = 2
     }
 
     #[test]
-    fn unset_values_use_defaults() {
-        let _g = EnvTestGuard::new();
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-
-        assert_eq!(config.server_url.source, ConfigSource::Default);
-        assert!(config.server_url.value.is_none());
-
-        assert_eq!(config.token.source, ConfigSource::Default);
-        assert!(config.token.value.is_none());
-    }
-
-    #[test]
-    fn full_precedence_env_over_file() {
-        let _g = EnvTestGuard::new();
-        let dir = setup_config_dir(
-            r#"
-[sync]
-workers = 2
-"#,
-        );
-
-        std::env::set_var("SB_SYNC_WORKERS", "8");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        std::env::remove_var("SB_SYNC_WORKERS");
-
-        // Env (8) should win over file (2)
-        assert_eq!(config.sync_workers.value, 8);
-        assert_eq!(
-            config.sync_workers.source,
-            ConfigSource::Env("SB_SYNC_WORKERS".to_string())
-        );
-    }
-
-    #[test]
     fn file_value_used_when_no_env() {
         let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
@@ -970,11 +971,6 @@ workers = 2
     }
 
     #[test]
-    fn mask_token_short_string() {
-        assert_eq!(mask_token("ab"), "***");
-    }
-
-    #[test]
     fn mask_token_empty_string() {
         assert_eq!(mask_token(""), "");
     }
@@ -986,17 +982,16 @@ workers = 2
 
     #[test]
     fn mask_token_handles_multibyte_utf8() {
-        // emoji characters are 4 bytes each — byte slicing would panic
-        let token = "🔑🔑🔑secret🔑🔑🔑";
-        let masked = mask_token(token);
-        assert!(masked.contains("..."), "should contain ellipsis");
-        assert!(!masked.contains("secret"), "should not reveal middle");
+        // emoji characters are 4 bytes each — byte slicing would panic or split one
+        assert_eq!(mask_token("🔑ab-secret-cd🔑"), "🔑ab...cd🔑");
+    }
 
-        // 3-char token should show ***
-        assert_eq!(mask_token("abc"), "***");
-
-        // empty token
-        assert_eq!(mask_token(""), "");
+    #[test]
+    fn mask_token_hides_every_length_below_six_behind_a_fixed_mask() {
+        // Fixed width, so the mask doesn't leak a short token's length.
+        for t in ["a", "ab", "abc", "abcde"] {
+            assert_eq!(mask_token(t), "***", "token {t:?}");
+        }
     }
 
     #[test]
@@ -1060,16 +1055,17 @@ workers = 2
     }
 
     #[test]
-    fn config_source_display() {
-        assert_eq!(ConfigSource::Default.to_string(), "default");
-        assert_eq!(ConfigSource::File.to_string(), "config");
+    fn config_source_display_names_the_user_config_layer() {
+        // `sb config show` prints this; it must tell the XDG layer from the per-space one.
+        assert_eq!(ConfigSource::UserFile.to_string(), "user config");
+        // Flag's text appears nowhere else in the suite.
         assert_eq!(
-            ConfigSource::Env("SB_TOKEN".to_string()).to_string(),
-            "env: SB_TOKEN"
-        );
-        assert_eq!(
-            ConfigSource::Flag("--workers".to_string()).to_string(),
+            ConfigSource::Flag("--workers".into()).to_string(),
             "flag: --workers"
+        );
+        assert_ne!(
+            ConfigSource::UserFile.to_string(),
+            ConfigSource::File.to_string()
         );
     }
 
@@ -1098,15 +1094,6 @@ workers = 2
     }
 
     // --- runtime config tests ---
-
-    #[test]
-    fn runtime_available_defaults_to_false() {
-        let _g = EnvTestGuard::new();
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load defaults");
-        assert!(!config.runtime_available.value);
-        assert_eq!(config.runtime_available.source, ConfigSource::Default);
-    }
 
     #[test]
     fn runtime_available_loads_true_from_config_file() {
@@ -1194,15 +1181,6 @@ available = false
     }
 
     #[test]
-    fn daily_time_format_defaults_to_hh_mm() {
-        let _g = EnvTestGuard::new();
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        assert_eq!(config.daily_time_format.value, "%H:%M");
-        assert_eq!(config.daily_time_format.source, ConfigSource::Default);
-    }
-
-    #[test]
     fn daily_time_format_loads_from_file() {
         let _g = EnvTestGuard::new();
         let dir = setup_config_dir(
@@ -1233,15 +1211,6 @@ timeFormat = "%H:%M"
             config.daily_time_format.source,
             ConfigSource::Env("SB_DAILY_TIME_FORMAT".to_string())
         );
-    }
-
-    #[test]
-    fn daily_bullet_style_defaults_to_star() {
-        let _g = EnvTestGuard::new();
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        assert_eq!(config.daily_bullet_style.value, "*");
-        assert_eq!(config.daily_bullet_style.source, ConfigSource::Default);
     }
 
     #[test]
@@ -1276,17 +1245,6 @@ bulletStyle = "+"
             }
             other => panic!("expected Config error, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn daily_task_tag_defaults() {
-        let _g = EnvTestGuard::new();
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        assert_eq!(config.daily_task_tag.value, "task");
-        assert_eq!(config.daily_task_tag.source, ConfigSource::Default);
-        assert_eq!(config.daily_task_tag_mode.value, "auto");
-        assert_eq!(config.daily_task_tag_mode.source, ConfigSource::Default);
     }
 
     #[test]
@@ -1344,16 +1302,6 @@ default = "Project"
         );
         assert_eq!(config.template_dir.source, ConfigSource::File);
         assert_eq!(config.template_default.value.as_deref(), Some("Project"));
-    }
-
-    #[test]
-    fn template_section_defaults_to_unset() {
-        let _g = EnvTestGuard::new();
-        let dir = setup_config_dir("server_url = \"https://example.com\"\n");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        assert!(config.template_dir.value.is_none());
-        assert!(config.template_default.value.is_none());
-        assert_eq!(config.template_dir.source, ConfigSource::Default);
     }
 
     #[test]
@@ -1427,16 +1375,6 @@ template = "Daily note for {{date}}"
     }
 
     #[test]
-    fn resolve_token_uses_config_file_when_no_flag_or_env() {
-        let _g = EnvTestGuard::new();
-        let dir = setup_config_dir(r#"token = "config-token""#);
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        let result = resolve_token(None, &config);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "config-token");
-    }
-
-    #[test]
     fn resolve_token_returns_token_not_found_when_all_sources_empty() {
         let _g = EnvTestGuard::new();
         let dir = tempfile::tempdir().expect("create tempdir");
@@ -1448,32 +1386,16 @@ template = "Daily note for {{date}}"
                 assert!(checked.iter().any(|s| s.contains("--token flag")));
                 assert!(checked.iter().any(|s| s.contains("SB_TOKEN")));
                 assert!(checked.iter().any(|s| s.contains("config.toml")));
+                assert!(
+                    checked.iter().any(|s| s.contains(".config/sb/config.toml")),
+                    "checked list should mention the XDG config; got: {checked:?}"
+                );
             }
             other => panic!("expected TokenNotFound, got: {other:?}"),
         }
     }
 
     // --- write_config_file tests ---
-
-    #[test]
-    fn write_config_file_creates_config_toml_with_url_and_token() {
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let sb_dir = dir.path().join(".sb");
-        std::fs::create_dir_all(&sb_dir).expect("create .sb dir");
-
-        write_config_file(&sb_dir, "https://example.com", Some("mytoken"))
-            .expect("write_config_file should succeed");
-
-        let content =
-            std::fs::read_to_string(sb_dir.join("config.toml")).expect("read config.toml");
-        assert!(
-            content.contains("server_url"),
-            "should contain server_url key"
-        );
-        assert!(content.contains("https://example.com"));
-        assert!(content.contains("token"));
-        assert!(content.contains("mytoken"));
-    }
 
     #[test]
     fn write_config_file_without_token_omits_token_field() {
@@ -1533,77 +1455,6 @@ template = "Daily note for {{date}}"
     }
 
     // --- keychain-aware resolve_token tests ---
-
-    #[test]
-    fn resolve_token_with_keychain_disabled_skips_keychain() {
-        // auth_keychain = false -> keychain never consulted; file token still works
-        let config = config_with_token(Some("config-token"));
-        assert!(!config.auth_keychain.value);
-        let result = resolve_token(None, &config);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "config-token");
-    }
-
-    #[test]
-    fn resolve_token_env_wins_over_keychain() {
-        // Even with auth_keychain = true, env token should win at step 2
-        let _g = EnvTestGuard::new();
-        let dir = setup_config_dir(
-            r#"
-token = "file-token"
-[auth]
-keychain = true
-"#,
-        );
-        std::env::set_var("SB_TOKEN", "env-token");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        std::env::remove_var("SB_TOKEN");
-        let result = resolve_token(None, &config);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap(), "env-token");
-    }
-
-    #[test]
-    fn resolve_token_not_found_includes_keychain_when_enabled() {
-        let _g = EnvTestGuard::new();
-        let dir = setup_config_dir(
-            r#"
-server_url = "https://example.com"
-[auth]
-keychain = true
-"#,
-        );
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        let result = resolve_token(None, &config);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SbError::TokenNotFound { checked } => {
-                assert!(
-                    checked.iter().any(|s| s.contains("OS keychain")),
-                    "checked list should include OS keychain when auth.keychain=true, got: {checked:?}"
-                );
-            }
-            other => panic!("expected TokenNotFound, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn resolve_token_not_found_omits_keychain_when_disabled() {
-        let _g = EnvTestGuard::new();
-        let dir = setup_config_dir(r#"server_url = "https://example.com""#);
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        let result = resolve_token(None, &config);
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            SbError::TokenNotFound { checked } => {
-                assert!(
-                    !checked.iter().any(|s| s.contains("OS keychain")),
-                    "checked list should NOT include OS keychain when auth.keychain=false, got: {checked:?}"
-                );
-            }
-            other => panic!("expected TokenNotFound, got: {other:?}"),
-        }
-    }
 
     #[test]
     fn resolve_token_file_token_used_when_keychain_disabled() {
@@ -1854,23 +1705,5 @@ enabled = true
         assert_eq!(config.shell_enabled.source, ConfigSource::UserFile);
         drop(xdg_tmp);
         restore_xdg(prev);
-    }
-
-    #[test]
-    fn token_not_found_message_lists_xdg_source() {
-        let _g = EnvTestGuard::new();
-        // No per-space token, no XDG file (EnvTestGuard isolates XDG to an empty dir).
-        let dir = tempfile::tempdir().expect("create tempdir");
-        let config = ResolvedConfig::load_from(dir.path()).expect("load config");
-        let err = resolve_token(None, &config).unwrap_err();
-        match err {
-            SbError::TokenNotFound { checked } => {
-                assert!(
-                    checked.iter().any(|s| s.contains(".config/sb/config.toml")),
-                    "checked list should mention XDG config; got: {checked:?}"
-                );
-            }
-            other => panic!("expected TokenNotFound, got: {other:?}"),
-        }
     }
 }
