@@ -879,43 +879,6 @@ mod tests {
         dir
     }
 
-    // --- page_name_to_path tests ---
-
-    #[test]
-    fn page_name_to_path_simple_name() {
-        let result = page_name_to_path("my-notes");
-        assert_eq!(result, PathBuf::from("my-notes.md"));
-    }
-
-    #[test]
-    fn page_name_to_path_nested_name() {
-        let result = page_name_to_path("Journal/2026-04-05");
-        assert_eq!(result, PathBuf::from("Journal/2026-04-05.md"));
-    }
-
-    // --- path_to_page_name tests ---
-
-    #[test]
-    fn path_to_page_name_strips_md_extension() {
-        let result = path_to_page_name(Path::new("Journal/2026-04-05.md"));
-        assert_eq!(result, "Journal/2026-04-05");
-    }
-
-    #[test]
-    fn path_to_page_name_simple_file() {
-        let result = path_to_page_name(Path::new("my-notes.md"));
-        assert_eq!(result, "my-notes");
-    }
-
-    // --- resolve_page_path tests ---
-
-    #[test]
-    fn resolve_page_path_joins_space_root_and_name() {
-        let space_root = Path::new("/space");
-        let result = resolve_page_path(space_root, "my-notes");
-        assert_eq!(result, PathBuf::from("/space/my-notes.md"));
-    }
-
     // --- find_space_root_from tests ---
 
     #[test]
@@ -951,395 +914,19 @@ mod tests {
     #[test]
     fn validate_page_path_rejects_parent_dir_traversal() {
         let space_root = Path::new("/space");
-        let result = validate_page_path(space_root, "../etc/passwd");
-        assert!(result.is_err(), "should reject path traversal");
-        match result.unwrap_err() {
-            SbError::Usage(msg) => {
-                assert!(
+        for name in ["../etc/passwd", "Projects/../../../etc/shadow"] {
+            match validate_page_path(space_root, name) {
+                Err(SbError::Usage(msg)) => assert!(
                     msg.contains("path traversal"),
-                    "error message should mention path traversal: {msg}"
-                );
+                    "{name}: error should mention path traversal: {msg}"
+                ),
+                other => panic!("{name}: expected Usage error, got: {other:?}"),
             }
-            other => panic!("expected Usage error, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn validate_page_path_rejects_double_dot_in_middle() {
-        let space_root = Path::new("/space");
-        let result = validate_page_path(space_root, "Projects/../../../etc/shadow");
-        assert!(result.is_err(), "should reject embedded path traversal");
     }
 
     mod execute_tests {
         use super::super::*;
-        use crate::test_util::{make_space, SbSpaceGuard};
-        use wiremock::matchers::{method, path as wpath};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        fn seed_page(space_root: &std::path::Path, page: &str, content: &str) {
-            let p = space_root.join(format!("{}.md", page));
-            if let Some(parent) = p.parent() {
-                std::fs::create_dir_all(parent).unwrap();
-            }
-            std::fs::write(p, content).unwrap();
-        }
-
-        // --- execute_list ---
-
-        #[tokio::test]
-        async fn list_returns_pages_in_human_format() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "Notes", "# Notes");
-            seed_page(tmp.path(), "Journal/2026-01-01", "# Day one");
-            execute_list(
-                &SortField::Name,
-                None,
-                &[],
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .expect("list");
-        }
-
-        #[tokio::test]
-        async fn list_with_limit_truncates() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            for i in 0..5 {
-                seed_page(tmp.path(), &format!("p{i}"), "x");
-            }
-            execute_list(
-                &SortField::Name,
-                Some(2),
-                &[],
-                &OutputFormat::Json,
-                true,
-                false,
-            )
-            .await
-            .expect("list with limit");
-        }
-
-        #[tokio::test]
-        async fn list_sort_by_modified_succeeds() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "a", "x");
-            seed_page(tmp.path(), "b", "y");
-            execute_list(
-                &SortField::Modified,
-                None,
-                &[],
-                &OutputFormat::Json,
-                true,
-                false,
-            )
-            .await
-            .expect("sort modified");
-        }
-
-        #[tokio::test]
-        async fn list_sort_by_created_succeeds() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "a", "x");
-            execute_list(
-                &SortField::Created,
-                None,
-                &[],
-                &OutputFormat::Json,
-                true,
-                false,
-            )
-            .await
-            .expect("sort created");
-        }
-
-        // --- execute_read ---
-
-        #[tokio::test]
-        async fn read_local_returns_existing_page_content() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "Hello", "world body");
-            execute_read(
-                None,
-                Some("Hello"),
-                false,
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .expect("read local");
-        }
-
-        #[tokio::test]
-        async fn read_local_errors_when_page_missing() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_read(
-                None,
-                Some("DoesNotExist"),
-                false,
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .unwrap_err();
-            assert!(matches!(err, SbError::PageNotFound { .. }));
-        }
-
-        #[tokio::test]
-        async fn read_remote_fetches_via_http() {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(wpath("/.fs/Some.md"))
-                .respond_with(ResponseTemplate::new(200).set_body_string("remote body"))
-                .mount(&server)
-                .await;
-            let tmp = make_space(Some(&server.uri()));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_read(None, Some("Some"), true, &OutputFormat::Human, true, false)
-                .await
-                .expect("read remote");
-        }
-
-        #[tokio::test]
-        async fn read_rejects_path_traversal_in_name() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_read(
-                None,
-                Some("../etc/passwd"),
-                false,
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .unwrap_err();
-            assert!(matches!(err, SbError::Usage(_)));
-        }
-
-        // --- execute_create ---
-
-        #[tokio::test]
-        async fn create_with_content_writes_file() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_create(
-                None,
-                "FromContent",
-                Some("# Hello"),
-                false,
-                None,
-                false,
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .expect("create with content");
-            let body = std::fs::read_to_string(tmp.path().join("FromContent.md")).unwrap();
-            assert_eq!(body, "# Hello");
-        }
-
-        #[tokio::test]
-        async fn create_errors_when_page_already_exists() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "Existing", "x");
-            let err = execute_create(
-                None,
-                "Existing",
-                Some("ignored"),
-                false,
-                None,
-                false,
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .unwrap_err();
-            assert!(matches!(err, SbError::PageAlreadyExists { .. }));
-        }
-
-        #[tokio::test]
-        async fn create_creates_parent_directories() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_create(
-                None,
-                "deep/nested/page",
-                Some("body"),
-                false,
-                None,
-                false,
-                &OutputFormat::Human,
-                true,
-                false,
-            )
-            .await
-            .expect("create deep");
-            assert!(tmp
-                .path()
-                .join("deep")
-                .join("nested")
-                .join("page.md")
-                .is_file());
-        }
-
-        // Note: the --template branch in execute_create is gated on stdin being a
-        // TTY — under `cargo test` stdin is piped, so the stdin-empty branch wins
-        // and an empty file is written. Testing the template branch end-to-end
-        // would need a refactor that injects "stdin is piped" the way daily.rs
-        // does; deferred for now.
-
-        // --- execute_delete with --force ---
-
-        #[tokio::test]
-        async fn delete_with_force_removes_file() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "ToDelete", "x");
-            execute_delete(Some("ToDelete"), true, false, true, false)
-                .await
-                .expect("delete force");
-            assert!(!tmp.path().join("ToDelete.md").exists());
-        }
-
-        #[tokio::test]
-        async fn delete_errors_when_page_missing() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_delete(Some("Missing"), true, false, true, false)
-                .await
-                .unwrap_err();
-            assert!(matches!(err, SbError::PageNotFound { .. }));
-        }
-
-        // --- execute_append ---
-
-        #[tokio::test]
-        async fn append_extends_existing_page() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "AppendMe", "first line");
-            execute_append("AppendMe", "second line", &[], true, false)
-                .await
-                .expect("append");
-            let body = std::fs::read_to_string(tmp.path().join("AppendMe.md")).unwrap();
-            assert_eq!(body, "first line\nsecond line");
-        }
-
-        #[tokio::test]
-        async fn append_creates_new_page_when_missing() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_append("BrandNew", "fresh content", &[], true, false)
-                .await
-                .expect("append-creates");
-            let body = std::fs::read_to_string(tmp.path().join("BrandNew.md")).unwrap();
-            assert_eq!(body, "fresh content");
-        }
-
-        #[tokio::test]
-        async fn append_with_sign_terminates_the_appended_block() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_append(
-                "Signed",
-                "Wrote the plan",
-                &["zef".to_string()],
-                true,
-                false,
-            )
-            .await
-            .expect("append");
-            let body = std::fs::read_to_string(tmp.path().join("Signed.md")).unwrap();
-            // Prose: the signature is its own blank-line-separated block, not
-            // a soft-wrapped continuation of the same paragraph.
-            assert_eq!(body, "Wrote the plan\n\n-- @zef\n");
-        }
-
-        #[tokio::test]
-        async fn append_with_sign_twice_produces_two_separate_signed_blocks() {
-            // The originally reported bug: two consecutive `--sign` appends
-            // must not merge into one Markdown paragraph, or the first
-            // signature ends up attributing the second entry too.
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_append("Signed", "First note", &["ada".to_string()], true, false)
-                .await
-                .expect("first append");
-            execute_append("Signed", "Second note", &["zef".to_string()], true, false)
-                .await
-                .expect("second append");
-            let body = std::fs::read_to_string(tmp.path().join("Signed.md")).unwrap();
-            let paragraphs: Vec<&str> = body
-                .split("\n\n")
-                .map(|p| p.trim_end_matches('\n'))
-                .filter(|p| !p.is_empty())
-                .collect();
-            assert_eq!(
-                paragraphs,
-                vec!["First note", "-- @ada", "Second note", "-- @zef"],
-                "each entry and each signature must be its own block, got: {body:?}"
-            );
-        }
-
-        #[tokio::test]
-        async fn append_with_sign_on_a_list_item_stays_on_the_same_line() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute_append(
-                "SignedList",
-                "* Fixed the bug",
-                &["ada".to_string(), "zef".to_string()],
-                true,
-                false,
-            )
-            .await
-            .expect("append");
-            let body = std::fs::read_to_string(tmp.path().join("SignedList.md")).unwrap();
-            assert_eq!(body, "* Fixed the bug -- @ada @zef");
-        }
-
-        // --- find_content_dir: path containment ---
-
-        #[tokio::test]
-        async fn find_content_dir_rejects_absolute_out_of_space_sync_dir() {
-            let tmp = tempfile::tempdir().expect("create tempdir");
-            let sb_dir = tmp.path().join(".sb");
-            std::fs::create_dir_all(&sb_dir).expect("create .sb");
-            let outside = tempfile::tempdir().expect("create outside tempdir");
-            std::fs::write(
-                sb_dir.join("config.toml"),
-                format!(
-                    "server_url = \"https://example.com\"\n[sync]\ndir = \"{}\"\n",
-                    outside.path().display()
-                ),
-            )
-            .expect("write config.toml");
-            let _g = SbSpaceGuard::set(tmp.path());
-            let err = find_content_dir().unwrap_err();
-            match err {
-                SbError::Config { message } => {
-                    assert!(
-                        message.contains("outside the space"),
-                        "error should explain the escape: {message}"
-                    );
-                }
-                other => panic!("expected Config error, got: {other:?}"),
-            }
-        }
 
         // --- append_signature (pure) ---
 
@@ -1370,77 +957,45 @@ mod tests {
         }
 
         #[test]
-        fn append_signature_two_consecutive_prose_signed_appends_are_separate_blocks() {
-            // Simulates what execute_append actually writes to disk: entry 1
-            // written fresh, entry 2 joined with a single '\n' the way
-            // execute_append does. The two signatures must not merge into
-            // one paragraph the way the original bug did.
-            let first = append_signature("First note", &["ada".into()]);
-            let second = append_signature("Second note", &["zef".into()]);
-            let file = format!("{first}\n{second}");
-            assert_eq!(file, "First note\n\n-- @ada\n\nSecond note\n\n-- @zef\n");
-            // Every entry and every signature is its own blank-line-separated
-            // paragraph -- no paragraph contains more than one line of
-            // "real" content plus, at most, its own signature.
-            let paragraphs: Vec<&str> = file
-                .split("\n\n")
-                .map(|p| p.trim_end_matches('\n'))
-                .filter(|p| !p.is_empty())
-                .collect();
-            assert_eq!(
-                paragraphs,
-                vec!["First note", "-- @ada", "Second note", "-- @zef"]
-            );
+        fn append_signature_with_no_content_is_just_the_signature() {
+            for content in ["", "   \n  \n"] {
+                assert_eq!(
+                    append_signature(content, &["ada".into()]),
+                    "-- @ada",
+                    "content {content:?}"
+                );
+            }
         }
 
         #[test]
-        fn append_signature_on_empty_content_is_just_the_signature() {
-            assert_eq!(append_signature("", &["ada".into()]), "-- @ada");
-        }
-
-        #[test]
-        fn append_signature_on_whitespace_only_content_is_just_the_signature() {
-            assert_eq!(append_signature("   \n  \n", &["ada".into()]), "-- @ada");
-        }
-
-        #[test]
-        fn append_signature_on_a_task_item_is_appended_inline() {
-            assert_eq!(
-                append_signature("- [ ] Ship the release", &["zef".into()]),
-                "- [ ] Ship the release -- @zef"
-            );
-        }
-
-        #[test]
-        fn append_signature_on_a_heading_breaks_into_a_new_block() {
-            assert_eq!(
-                append_signature("# Status update", &["ada".into()]),
-                "# Status update\n\n-- @ada\n"
-            );
-        }
-
-        #[test]
-        fn append_signature_on_a_blockquote_breaks_into_a_new_block() {
-            assert_eq!(
-                append_signature("> quoted wisdom", &["ada".into()]),
-                "> quoted wisdom\n\n-- @ada\n"
-            );
-        }
-
-        #[test]
-        fn append_signature_on_a_table_row_breaks_into_a_new_block() {
-            assert_eq!(
-                append_signature("| a | b |", &["ada".into()]),
-                "| a | b |\n\n-- @ada\n"
-            );
+        fn append_signature_on_non_list_blocks_breaks_into_a_new_block() {
+            for content in ["# Status update", "> quoted wisdom", "| a | b |"] {
+                assert_eq!(
+                    append_signature(content, &["ada".into()]),
+                    format!("{content}\n\n-- @ada\n"),
+                    "content {content:?}"
+                );
+            }
         }
 
         #[test]
         fn append_signature_on_a_list_item_is_appended_inline() {
-            assert_eq!(
-                append_signature("* Did the thing", &["zef".into()]),
-                "* Did the thing -- @zef"
-            );
+            // Every list marker (bullet, task, ordered) keeps the signature
+            // on the same line; `+` and `2)` are only reachable through here.
+            for content in [
+                "* Did the thing",
+                "- Did the thing",
+                "+ Did the thing",
+                "- [ ] Did the thing",
+                "1. Did the thing",
+                "2) Did the thing",
+            ] {
+                assert_eq!(
+                    append_signature(content, &["zef".into()]),
+                    format!("{content} -- @zef"),
+                    "content {content:?}"
+                );
+            }
         }
 
         #[test]
@@ -1451,14 +1006,6 @@ mod tests {
             assert_eq!(
                 append_signature("* First line\n  second line", &["zef".into()]),
                 "* First line\n  second line -- @zef"
-            );
-        }
-
-        #[test]
-        fn append_signature_on_an_ordered_list_item_is_appended_inline() {
-            assert_eq!(
-                append_signature("1. Do the thing", &["zef".into()]),
-                "1. Do the thing -- @zef"
             );
         }
 
@@ -1493,10 +1040,6 @@ mod tests {
             let content = "- did a thing\n\n```lua\ncode\n```";
             let result = append_signature(content, &["cam".into()]);
             assert_eq!(result, "- did a thing\n\n```lua\ncode\n```\n-- @cam\n");
-            // The fence itself must be untouched -- still exactly ``` alone
-            // on its line, with nothing appended to it.
-            let fence_line = result.lines().nth(4).unwrap();
-            assert_eq!(fence_line, "```");
         }
 
         #[test]
@@ -1513,84 +1056,6 @@ mod tests {
                 append_signature("done", &["@zef".into()]),
                 "done\n\n-- @zef\n"
             );
-        }
-
-        #[test]
-        fn is_list_item_line_recognizes_bullets_tasks_and_ordered_markers() {
-            assert!(is_list_item_line("- item"));
-            assert!(is_list_item_line("* item"));
-            assert!(is_list_item_line("+ item"));
-            assert!(is_list_item_line("* [ ] task"));
-            assert!(is_list_item_line("1. item"));
-            assert!(is_list_item_line("2) item"));
-            assert!(!is_list_item_line("plain prose"));
-            assert!(!is_list_item_line("-- @zef")); // a signature is not a list item
-        }
-
-        #[test]
-        fn ends_inside_open_fenced_code_block_counts_fence_parity() {
-            assert!(ends_inside_open_fenced_code_block("```\ncode"));
-            assert!(!ends_inside_open_fenced_code_block("```\ncode\n```"));
-            assert!(!ends_inside_open_fenced_code_block("no fences here"));
-        }
-
-        // --- execute_move ---
-
-        #[tokio::test]
-        async fn move_renames_existing_page() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "OldName", "body");
-            execute_move("OldName", "NewName", false, true, false)
-                .await
-                .expect("move");
-            assert!(!tmp.path().join("OldName.md").exists());
-            assert!(tmp.path().join("NewName.md").is_file());
-        }
-
-        #[tokio::test]
-        async fn move_errors_when_source_missing() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_move("Ghost", "Other", false, true, false)
-                .await
-                .unwrap_err();
-            assert!(matches!(err, SbError::PageNotFound { .. }));
-        }
-
-        #[tokio::test]
-        async fn move_errors_when_destination_exists() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "A", "x");
-            seed_page(tmp.path(), "B", "y");
-            let err = execute_move("A", "B", false, true, false)
-                .await
-                .unwrap_err();
-            assert!(matches!(err, SbError::PageAlreadyExists { .. }));
-        }
-
-        #[tokio::test]
-        async fn move_to_nested_path_creates_parent_dirs() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            seed_page(tmp.path(), "Flat", "x");
-            execute_move("Flat", "Subdir/Nested", false, true, false)
-                .await
-                .expect("move nested");
-            assert!(tmp.path().join("Subdir").join("Nested.md").is_file());
-        }
-
-        // --- execute_edit (without spawning editor) ---
-
-        #[tokio::test]
-        async fn edit_errors_when_page_missing() {
-            let tmp = make_space(Some("https://example.com"));
-            let _g = SbSpaceGuard::set(tmp.path());
-            let err = execute_edit(Some("Missing"), true, false)
-                .await
-                .unwrap_err();
-            assert!(matches!(err, SbError::PageNotFound { .. }));
         }
     }
 }

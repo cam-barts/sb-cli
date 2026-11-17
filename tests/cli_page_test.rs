@@ -217,6 +217,38 @@ fn page_list_sort_name_orders_alphabetically() {
 }
 
 #[test]
+fn page_list_sort_modified_puts_newest_first() {
+    let dir = setup_space();
+    // Names chosen so that name order differs from mtime order.
+    let base = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000);
+    for (name, age_secs) in [("mid", 200), ("newest", 0), ("oldest", 400)] {
+        write_page(&dir, name, "x");
+        let f = std::fs::File::options()
+            .write(true)
+            .open(dir.path().join(format!("{name}.md")))
+            .expect("open page");
+        f.set_modified(base - std::time::Duration::from_secs(age_secs))
+            .expect("set mtime");
+    }
+
+    let output = sb_cmd(&dir)
+        .args(["page", "list", "--format", "json", "--sort", "modified"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    let names: Vec<&str> = parsed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["newest", "mid", "oldest"]);
+}
+
+#[test]
 fn page_list_in_non_initialized_directory_returns_error() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let xdg_dir = tempfile::tempdir().expect("create xdg tempdir");
@@ -273,6 +305,7 @@ fn page_read_path_traversal_is_rejected() {
         .args(["page", "read", "../../etc/passwd"])
         .assert()
         .failure()
+        .code(2) // Usage
         .stderr(predicate::str::contains("path traversal").or(predicate::str::contains("invalid")));
 }
 
@@ -332,10 +365,7 @@ fn page_create_with_content_flag_creates_file() {
     let file_path = dir.path().join("new-page.md");
     assert!(file_path.exists(), "new-page.md should exist");
     let content = std::fs::read_to_string(&file_path).expect("read file");
-    assert!(
-        content.contains("hello world"),
-        "file should contain the content"
-    );
+    assert_eq!(content, "hello world");
 }
 
 #[test]
@@ -358,6 +388,8 @@ fn page_create_duplicate_fails_with_error() {
             predicate::str::contains("already exists")
                 .or(predicate::str::contains("existing-page")),
         );
+    let body = std::fs::read_to_string(dir.path().join("existing-page.md")).unwrap();
+    assert_eq!(body, "original content", "failed create must not clobber");
 }
 
 #[test]
@@ -433,7 +465,7 @@ fn page_create_nested_creates_intermediate_directories() {
     let file_path = dir.path().join("sub").join("dir").join("nested-page.md");
     assert!(file_path.exists(), "nested file should be created");
     let content = std::fs::read_to_string(&file_path).expect("read file");
-    assert!(content.contains("nested content"));
+    assert_eq!(content, "nested content");
 }
 
 #[test]
@@ -473,15 +505,20 @@ fn page_edit_refuses_non_interactively_without_editor() {
     write_page(&dir, "test-page", "# Test Page");
 
     // The test harness runs without a TTY, so `page edit` refuses up front
-    // (editing needs an interactive $EDITOR) regardless of whether EDITOR is set.
-    sb_cmd(&dir)
-        .args(["page", "edit", "test-page"])
-        .env_remove("EDITOR")
-        .env_remove("VISUAL")
-        .assert()
-        .failure()
-        .code(2) // Usage / non-interactive
-        .stderr(predicate::str::contains("non-interactive"));
+    // (editing needs an interactive $EDITOR) regardless of whether EDITOR is
+    // set: it must not launch an editor that would block on input it cannot get.
+    for editor in [None, Some("true")] {
+        let mut cmd = sb_cmd(&dir);
+        cmd.args(["page", "edit", "test-page"]).env_remove("VISUAL");
+        match editor {
+            Some(e) => cmd.env("EDITOR", e),
+            None => cmd.env_remove("EDITOR"),
+        };
+        cmd.assert()
+            .failure()
+            .code(2) // Usage / non-interactive
+            .stderr(predicate::str::contains("non-interactive"));
+    }
 }
 
 #[test]
@@ -497,22 +534,6 @@ fn page_edit_nonexistent_page_returns_not_found_error() {
         .stderr(
             predicate::str::contains("not found").or(predicate::str::contains("nonexistent-page")),
         );
-}
-
-#[test]
-fn page_edit_refuses_non_interactively_even_with_editor_set() {
-    let dir = setup_space();
-    write_page(&dir, "test-page", "# Test Page");
-
-    // Even with EDITOR set, a non-TTY (agent/pipe) invocation refuses rather
-    // than launching an editor that would block on input it cannot provide.
-    sb_cmd(&dir)
-        .args(["page", "edit", "test-page"])
-        .env("EDITOR", "true")
-        .assert()
-        .failure()
-        .code(2)
-        .stderr(predicate::str::contains("non-interactive"));
 }
 
 // ---------------------------------------------------------------------------
@@ -601,10 +622,7 @@ fn page_append_existing_adds_newline_then_content() {
 
     let file_path = dir.path().join("notes.md");
     let content = std::fs::read_to_string(&file_path).expect("read file");
-    assert!(
-        content.contains("line1\nline2"),
-        "appended content should follow original with newline separator, got: {content:?}"
-    );
+    assert_eq!(content, "line1\nline2");
 }
 
 #[test]
@@ -619,15 +637,7 @@ fn page_append_nonexistent_creates_page_with_content() {
     let file_path = dir.path().join("new-page.md");
     assert!(file_path.exists(), "page should be created by append");
     let content = std::fs::read_to_string(&file_path).expect("read file");
-    assert!(
-        content.contains("first line"),
-        "created page should contain the appended content, got: {content:?}"
-    );
-    // No leading newline when creating a new page
-    assert!(
-        !content.starts_with('\n'),
-        "new page should not start with a newline, got: {content:?}"
-    );
+    assert_eq!(content, "first line");
 }
 
 #[test]
