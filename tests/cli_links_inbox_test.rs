@@ -25,6 +25,13 @@ fn sb_in(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("sb").unwrap();
     cmd.current_dir(dir)
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+    // SB_SPACE outranks cwd and SB_SERVER_URL/SB_TOKEN outrank the space's
+    // config; never let a dev shell's values aim these at a real server.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("SB_") {
+            cmd.env_remove(key);
+        }
+    }
     cmd
 }
 
@@ -151,44 +158,16 @@ async fn assert_backlink_query_is_injection_safe(page: &str, expected_literal: &
     );
 }
 
-#[tokio::test]
-async fn links_page_name_with_an_apostrophe_does_not_break_the_query() {
-    // An apostrophe never needed escaping, but this still proves the
-    // apostrophe passes through untouched into a valid, unbroken query.
-    assert_backlink_query_is_injection_safe("Cam's Notes", r#""Cam's Notes""#).await;
-}
-
-#[tokio::test]
-async fn links_page_name_with_a_double_quote_stays_confined_to_the_literal() {
-    assert_backlink_query_is_injection_safe(r#"Say "hi" Notes"#, r#""Say \"hi\" Notes""#).await;
-}
-
-#[tokio::test]
-async fn links_page_name_with_a_backslash_stays_confined_to_the_literal() {
-    assert_backlink_query_is_injection_safe(r"a\b\", r#""a\\b\\""#).await;
-}
-
-#[tokio::test]
-async fn links_page_name_with_double_and_leveled_closing_brackets_does_not_break_the_query() {
-    // This is exactly the payload that broke the old `[==[...]==]` wrapper:
-    // a page name containing `]]` (would have closed a plain `[[...]]`
-    // early) and `]==]` (would have closed the old leveled bracket early).
-    // Neither can do anything here because the page name never touches the
-    // query body at all.
-    assert_backlink_query_is_injection_safe("Weird]==]Page]]end", r#""Weird]==]Page]]end""#).await;
-}
-
+// The per-character escaping rules (quotes, backslashes, brackets, control
+// characters) are covered by the lua_string_literal unit tests in links.rs;
+// one wire-level case proves the escaped literal reaches the server and the
+// query line stays constant.
 #[tokio::test]
 async fn links_page_name_with_a_newline_does_not_break_the_query() {
     // An unescaped literal newline inside a Lua double-quoted string is a
     // syntax error, so this must come through as the two-character escape
     // `\n`, keeping the whole script on its original two lines.
     assert_backlink_query_is_injection_safe("Line one\nLine two", r#""Line one\nLine two""#).await;
-}
-
-#[tokio::test]
-async fn links_page_name_with_a_control_character_does_not_break_the_query() {
-    assert_backlink_query_is_injection_safe("Control\u{7}Char", r#""Control\007Char""#).await;
 }
 
 #[tokio::test]
@@ -226,7 +205,9 @@ async fn inbox_to_cam_and_to_at_cam_send_the_identical_query() {
     sb_in(dir.path())
         .args(["--format", "json", "inbox", "--to", "cam"])
         .assert()
-        .success();
+        .success()
+        // The server's row must reach stdout: inbox::execute wires rows into render.
+        .stdout(predicate::str::contains("Some Page"));
     sb_in(dir.path())
         .args(["--format", "json", "inbox", "--to", "@cam"])
         .assert()
@@ -305,20 +286,16 @@ async fn inbox_empty_result_prints_note_on_stderr_and_empty_array_on_stdout() {
 }
 
 #[tokio::test]
-async fn inbox_renders_the_at_mention_snippet_field() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/.runtime/lua_script"))
-        .respond_with(ResponseTemplate::new(200).set_body_string(at_mention_fixture_body()))
-        .mount(&server)
-        .await;
-    let dir = setup_space(&server.uri(), true);
-
+async fn inbox_runtime_unavailable_prints_docs_link() {
+    let dir = setup_space("http://localhost:19999", false);
     sb_in(dir.path())
-        .args(["--format", "json", "inbox", "--to", "cam"])
+        .args(["inbox", "--to", "cam"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("@cam please review"));
+        .failure()
+        .code(1)
+        .stderr(predicate::str::contains(
+            "https://silverbullet.md/Runtime%20API",
+        ));
 }
 
 /// Same injection-safety property as `assert_backlink_query_is_injection_safe`,

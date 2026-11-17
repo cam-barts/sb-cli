@@ -6,7 +6,7 @@
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
-use wiremock::matchers::{any, method, path, query_param};
+use wiremock::matchers::{any, method, path, query_param, query_param_is_missing};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -31,6 +31,13 @@ fn sb_in(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
     cmd.current_dir(dir.path())
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+    // SB_SPACE outranks cwd and SB_SERVER_URL/SB_TOKEN outrank the space's
+    // config; restore would write into a real space.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("SB_") {
+            cmd.env_remove(key);
+        }
+    }
     cmd
 }
 
@@ -46,7 +53,7 @@ async fn history_renders_a_revision_list() {
     Mock::given(method("GET"))
         .and(path("/.revisions/Note.md"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-            r#"{{"mode":"managed","uncommitted":false,"more":false,"revisions":[{{"rev":"{REV_A}","timestamp":1700000000000,"author":"alice","message":"edit note","added":1,"removed":0}}]}}"#
+            r#"{{"mode":"managed","uncommitted":true,"more":true,"revisions":[{{"rev":"{REV_A}","timestamp":1700000000000,"author":"alice","message":"edit note","added":1,"removed":0}}]}}"#
         )))
         .mount(&server)
         .await;
@@ -59,7 +66,9 @@ async fn history_renders_a_revision_list() {
         .assert()
         .success()
         .stdout(predicate::str::contains("alice"))
-        .stdout(predicate::str::contains("edit note"));
+        .stdout(predicate::str::contains("edit note"))
+        .stderr(predicate::str::contains("more revisions available"))
+        .stderr(predicate::str::contains("uncommitted changes"));
 }
 
 #[tokio::test]
@@ -67,6 +76,8 @@ async fn history_json_shape_is_stable() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/.revisions/Note.md"))
+        // Default --limit is 50 and must reach the server.
+        .and(query_param("limit", "50"))
         .respond_with(ResponseTemplate::new(200).set_body_string(format!(
             r#"{{"mode":"managed","uncommitted":true,"more":false,"revisions":[{{"rev":"{REV_A}","timestamp":1700000000000,"author":"alice","message":"edit","added":1,"removed":0}}]}}"#
         )))
@@ -110,7 +121,31 @@ async fn history_on_an_enabled_but_empty_space_renders_cleanly() {
         .args(["page", "history", "Note", "--format", "human"])
         .assert()
         .success()
-        .stderr(predicate::str::contains("error").not());
+        .stderr(predicate::str::contains(
+            "No revisions for 'Note' (mode: unmanaged)",
+        ));
+}
+
+#[tokio::test]
+async fn history_quiet_suppresses_hints_but_keeps_the_revision_list() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.revisions/Note.md"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            r#"{{"mode":"managed","uncommitted":true,"more":true,"revisions":[{{"rev":"{REV_A}","timestamp":1700000000000,"author":"alice","message":"edit note","added":1,"removed":0}}]}}"#
+        )))
+        .mount(&server)
+        .await;
+
+    let space = setup_space(&server.uri());
+    std::fs::write(space.path().join("Note.md"), "content").unwrap();
+
+    sb_in(&space)
+        .args(["--quiet", "page", "history", "Note", "--format", "human"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("edit note"))
+        .stderr(predicate::str::is_empty());
 }
 
 #[tokio::test]
@@ -169,6 +204,7 @@ async fn diff_without_rev_is_the_uncommitted_change_and_omits_rev_param() {
     Mock::given(method("GET"))
         .and(path("/.revisions/Note.md"))
         .and(query_param("format", "diff"))
+        .and(query_param_is_missing("rev"))
         .respond_with(ResponseTemplate::new(200).set_body_string("+uncommitted change\n"))
         .mount(&server)
         .await;
@@ -181,6 +217,28 @@ async fn diff_without_rev_is_the_uncommitted_change_and_omits_rev_param() {
         .assert()
         .success()
         .stdout(predicate::str::contains("uncommitted change"));
+}
+
+#[tokio::test]
+async fn diff_with_nothing_to_show_is_success_with_a_note_on_stderr() {
+    // A benign 404 (no diff for this page/rev) is not an error.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.revisions/Note.md"))
+        .and(query_param("format", "diff"))
+        .respond_with(ResponseTemplate::new(404))
+        .mount(&server)
+        .await;
+
+    let space = setup_space(&server.uri());
+    std::fs::write(space.path().join("Note.md"), "content").unwrap();
+
+    sb_in(&space)
+        .args(["page", "diff", "Note", "--format", "human"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("no uncommitted changes to 'Note'"));
 }
 
 #[tokio::test]

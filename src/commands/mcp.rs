@@ -438,10 +438,14 @@ mod imp {
             assert_eq!(read_only.get("daily_append"), Some(&false));
         }
 
+        // Kept despite the audit: dropping `enable_tools()` from get_info
+        // would make clients see a server with no tools, and no other test
+        // reaches get_info.
         #[test]
         fn get_info_advertises_tools_capability() {
             let info = SbMcpServer::new().get_info();
             assert!(info.capabilities.tools.is_some());
+            // Clients display this name; nothing else in the suite checks it.
             assert_eq!(info.server_info.name, "sb");
         }
     }

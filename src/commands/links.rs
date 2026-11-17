@@ -525,15 +525,6 @@ mod tests {
     // --- build_links_script ---
 
     #[test]
-    fn build_links_script_declares_target_local_from_the_escaped_page_name() {
-        let script = build_links_script("Cam's Notes", false, 50);
-        assert_eq!(
-            script.lines().next().unwrap(),
-            r#"local target = "Cam's Notes""#
-        );
-    }
-
-    #[test]
     fn build_links_script_filters_to_field_by_default() {
         let script = build_links_script("Cam's Notes", false, 50);
         assert!(script.contains("to == target"));
@@ -579,65 +570,17 @@ mod tests {
             script.lines().next().unwrap(),
             format!("local target = {}", lua_string_literal(hostile))
         );
+        // A benign name lands on line one as a plain escaped literal.
+        assert_eq!(
+            build_links_script("Cam's Notes", false, 50)
+                .lines()
+                .next()
+                .unwrap(),
+            r#"local target = "Cam's Notes""#
+        );
     }
 
     // --- execute() end-to-end against a mock Runtime API ---
-
-    #[tokio::test]
-    async fn errors_when_runtime_disabled() {
-        let tmp = make_space(Some("http://127.0.0.1:1"));
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute(
-            None,
-            Some("Some Page"),
-            false,
-            200,
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await
-        .unwrap_err();
-        assert!(format!("{err}").contains("Runtime API not available"));
-    }
-
-    #[tokio::test]
-    async fn execute_succeeds_against_a_mocked_runtime() {
-        // execute()'s only job beyond render() is plumbing: load config,
-        // build the client, eval the script, hand the result to render().
-        // That plumbing is what this test checks; the *content* of what gets
-        // rendered (snippet field, empty-result shape, --fields trimming) is
-        // covered directly against render() below, and by the assert_cmd
-        // end-to-end tests in tests/cli_links_inbox_test.rs, which can
-        // actually capture the real stdout this function writes to.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(format!(r#"{{"result":{}}}"#, relation_fixture())),
-            )
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(
-            None,
-            Some("Library/Personal/Observatory"),
-            false,
-            200,
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(res.is_ok(), "{res:?}");
-    }
 
     #[tokio::test]
     async fn returns_usage_error_when_server_reports_a_query_error() {
@@ -676,8 +619,8 @@ mod tests {
     // that a call to it didn't error.
 
     #[test]
-    fn render_json_keeps_snippet_field_when_fields_unset() {
-        // No --fields means no trimming: snippet must survive into the output.
+    fn render_json_keeps_snippet_by_default_and_drops_it_under_fields() {
+        // No --fields: no trimming, the snippet value survives.
         let mut buf = Vec::new();
         render(
             &relation_fixture(),
@@ -688,12 +631,9 @@ mod tests {
             &mut buf,
         )
         .unwrap();
-        let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("[[Library/Personal/Observatory]]"));
-    }
-
-    #[test]
-    fn render_json_drops_snippet_when_fields_excludes_it() {
+        let untrimmed = String::from_utf8(buf).unwrap();
+        assert!(untrimmed.contains("[[Library/Personal/Observatory]]"));
+        // --fields to: only the requested field is kept, the snippet goes.
         let mut buf = Vec::new();
         render(
             &relation_fixture(),

@@ -97,7 +97,7 @@ async fn server_config_json_format() {
         .and(path("/.config"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(
-                r#"{"readOnly":false,"spaceFolderPath":"/data/space","indexPage":"index","logPush":false,"enableClientEncryption":false}"#,
+                r#"{"readOnly":false,"spaceFolderPath":"/data/space","indexPage":"index","logPush":false,"enableClientEncryption":true}"#,
             ),
         )
         .mount(&server)
@@ -118,11 +118,17 @@ async fn server_config_json_format() {
         .clone();
 
     let stdout = String::from_utf8(output).expect("valid utf8");
-    // Validate it's valid JSON with expected key
     let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
-    assert!(
-        parsed.get("spaceFolderPath").is_some(),
-        "JSON should contain spaceFolderPath; got:\n{stdout}"
+    assert_eq!(
+        parsed,
+        serde_json::json!({
+            "readOnly": false,
+            "spaceFolderPath": "/data/space",
+            "indexPage": "index",
+            "logPush": false,
+            "enableClientEncryption": true
+        }),
+        "got:\n{stdout}"
     );
 }
 

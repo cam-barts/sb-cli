@@ -306,7 +306,7 @@ fn print_json(config: &ResolvedConfig, reveal: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_util::{make_space, SbSpaceGuard};
+    use crate::test_util::SbSpaceGuard;
 
     #[test]
     fn source_annotation_renders_each_source_variant() {
@@ -374,30 +374,6 @@ mod tests {
     }
 
     #[test]
-    fn execute_show_is_noop_when_quiet() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        // Quiet path: early-return Ok without touching config resolution.
-        execute_show(false, &OutputFormat::Human, true).expect("quiet show should succeed");
-    }
-
-    #[test]
-    fn execute_show_succeeds_with_configured_space_human() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_show(false, &OutputFormat::Human, false)
-            .expect("show should succeed when space is configured");
-    }
-
-    #[test]
-    fn execute_show_succeeds_with_configured_space_json() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_show(true, &OutputFormat::Json, false)
-            .expect("show should succeed in json format with reveal");
-    }
-
-    #[test]
     fn execute_set_space_errors_when_target_has_no_sb_dir() {
         let tmp = tempfile::tempdir().unwrap();
         let path_str = tmp.path().display().to_string();
@@ -407,20 +383,5 @@ mod tests {
             SbError::Usage(msg) => assert!(msg.contains("no .sb/")),
             other => panic!("expected Usage, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn execute_get_space_quiet_returns_ok_without_printing() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_get_space(&OutputFormat::Human, true).expect("quiet path");
-    }
-
-    #[test]
-    fn execute_get_space_uses_sb_space_env_source() {
-        // get_space prefers SB_SPACE over cwd walk-up; we already set SB_SPACE via the guard.
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_get_space(&OutputFormat::Json, false).expect("env-sourced path");
     }
 }

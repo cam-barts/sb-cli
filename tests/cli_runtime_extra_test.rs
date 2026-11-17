@@ -178,6 +178,29 @@ async fn logs_first_poll_sends_no_since_query_param() {
         .success();
 }
 
+#[tokio::test]
+async fn logs_with_no_entries_human_prints_friendly_note_on_stderr() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/.runtime/logs"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_string(r#"{"clientLogs":[],"serverLogs":[]}"#),
+        )
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "logs"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("No log entries."));
+}
+
 // ---------------- sb lua --script ----------------
 
 #[tokio::test]
@@ -214,6 +237,8 @@ async fn lua_script_dash_reads_from_stdin() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/.runtime/lua_script"))
+        // The stdin text must be what is posted, not just any script.
+        .and(body_string_contains("return 'hi'"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": "hi"}"#))
         .mount(&server)
         .await;
@@ -230,10 +255,11 @@ async fn lua_script_dash_reads_from_stdin() {
         .stdout(predicate::str::contains("hi"));
 }
 
-#[tokio::test]
-async fn lua_script_and_expression_together_exits_usage_error() {
-    // clap's own conflicts_with rejects this before any command code runs --
-    // no server needed at all.
+#[test]
+fn lua_script_and_expression_together_is_a_usage_error() {
+    // `conflicts_with = "expression"` on --script is repo code (src/cli.rs);
+    // the stderr check makes sure exit 2 came from that conflict, not some
+    // other parse failure.
     let dir = setup_space("http://localhost:19999", true);
 
     Command::cargo_bin("sb")
@@ -242,8 +268,8 @@ async fn lua_script_and_expression_together_exits_usage_error() {
         .args(["lua", "--script", "somefile.lua", "1 + 1"])
         .current_dir(dir.path())
         .assert()
-        .failure()
-        .code(2);
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
 }
 
 #[tokio::test]
@@ -264,7 +290,8 @@ async fn lua_script_missing_file_is_filesystem_error_with_no_http_request() {
         .args(["lua", "--script", missing_path.to_str().unwrap()])
         .current_dir(dir.path())
         .assert()
-        .failure()
+        // A filesystem error is `general` (exit 1), not usage or not-found.
+        .code(1)
         .stderr(predicate::str::contains(
             missing_path.to_str().unwrap().to_string(),
         ));
@@ -415,7 +442,8 @@ async fn screenshot_json_with_stdout_dash_is_usage_error() {
         .current_dir(dir.path())
         .assert()
         .failure()
-        .code(2);
+        .code(2)
+        .stderr(predicate::str::contains("incompatible"));
 }
 
 // ---------------- sb describe ----------------
@@ -531,4 +559,68 @@ async fn describe_runtime_unavailable_prints_docs_link() {
         .stderr(predicate::str::contains(
             "https://silverbullet.md/Runtime%20API",
         ));
+}
+
+#[tokio::test]
+async fn describe_zero_sampled_human_prints_nothing_to_describe_on_stderr() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua_script"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_string(r#"{"result":{"tag":"missing","sampled":0,"fields":{}}}"#),
+        )
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "describe", "missing"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "No objects with tag 'missing' found in the index",
+        ));
+}
+
+/// With no tag, describe lists tags. The probe must tally from full rows
+/// (`select` de-duplicates, turning every count into 1) and `tostring` the
+/// bridge-wrapped name; assert both on the wire, and that rows come back out.
+#[tokio::test]
+async fn describe_without_tag_sends_full_row_tally_probe_and_lists_tags() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua_script"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(
+            r#"{"result":[{"name":"zotero","count":606,"parents":"page"},{"name":"highlight","count":431,"parents":"data"}]}"#,
+        ))
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    let stdout = Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "json", "describe"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let v: serde_json::Value = serde_json::from_slice(&stdout).unwrap();
+    assert_eq!(v[0]["name"], "zotero");
+    assert_eq!(v[0]["count"], 606);
+    assert_eq!(v[1]["parents"], "data");
+
+    let received = server.received_requests().await.unwrap();
+    assert_eq!(received.len(), 1);
+    let body = String::from_utf8_lossy(&received[0].body).to_string();
+    assert!(body.contains(r#"from index.tag "tag""#), "body: {body}");
+    assert!(body.contains("tostring(r.name)"), "body: {body}");
+    assert!(!body.contains("select"), "body: {body}");
 }

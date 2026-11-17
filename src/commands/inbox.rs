@@ -254,8 +254,7 @@ mod tests {
     use super::*;
     use crate::error::SbError;
     use crate::test_util::{make_space, SbSpaceGuard};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::MockServer;
 
     fn enable_runtime(space_root: &std::path::Path) {
         crate::config::update_config_value(&space_root.join(".sb"), "runtime", "available", true)
@@ -435,25 +434,6 @@ mod tests {
     // --- execute() end-to-end against a mock Runtime API ---
 
     #[tokio::test]
-    async fn errors_when_runtime_disabled() {
-        let tmp = make_space(Some("http://127.0.0.1:1"));
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute(
-            None,
-            Some("cam"),
-            200,
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await
-        .unwrap_err();
-        assert!(format!("{err}").contains("Runtime API not available"));
-    }
-
-    #[tokio::test]
     async fn missing_identity_with_no_to_flag_is_a_usage_error() {
         let server = MockServer::start().await;
         let tmp = make_space(Some(&server.uri()));
@@ -464,99 +444,5 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, SbError::Usage(_)));
-    }
-
-    #[tokio::test]
-    async fn execute_succeeds_on_an_empty_result() {
-        // execute()'s plumbing is what this checks; the actual rendered
-        // shape of an empty result ("[]" on stdout) is asserted directly
-        // against render() in links.rs's own tests (render() is shared), and
-        // end to end in
-        // tests/cli_links_inbox_test.rs::inbox_empty_result_prints_note_on_stderr_and_empty_array_on_stdout,
-        // which can capture the real stdout this function writes to.
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":[]}"#))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(
-            None,
-            Some("cam"),
-            200,
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(res.is_ok());
-    }
-
-    #[test]
-    fn render_includes_the_at_mention_snippet_field() {
-        // Direct content check for the inbox fixture shape (kind ==
-        // "at-mention"), complementing links.rs's render() coverage of the
-        // "mention" shape.
-        let fixture = serde_json::json!([{
-            "kind": "at-mention",
-            "tag": "relation",
-            "to": "@cam",
-            "from": "Some Page",
-            "snippet": "@cam please review",
-        }]);
-        let mut buf = Vec::new();
-        crate::commands::links::render(
-            &fixture,
-            &[],
-            &OutputFormat::Json,
-            true,
-            "No mentions.",
-            &mut buf,
-        )
-        .unwrap();
-        let out = String::from_utf8(buf).unwrap();
-        assert!(out.contains("@cam please review"));
-    }
-
-    #[tokio::test]
-    async fn to_with_and_without_at_hit_the_server_with_the_identical_query() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":[]}"#))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        // Both must succeed identically; the query-string equivalence itself
-        // is asserted directly in build_inbox_script/normalize_identity tests.
-        let a = execute(
-            None,
-            Some("cam"),
-            200,
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        let b = execute(
-            None,
-            Some("@cam"),
-            200,
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(a.is_ok() && b.is_ok());
     }
 }

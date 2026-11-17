@@ -67,33 +67,6 @@ async fn init_creates_sb_directory_and_files() {
 }
 
 #[tokio::test]
-async fn init_writes_server_url_to_config_toml() {
-    let server = MockServer::start().await;
-    mock_ping_ok(&server).await;
-
-    let temp_dir = tempfile::TempDir::new().expect("create tempdir");
-
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["init", &server.uri(), "--token", "testtoken"])
-        .current_dir(temp_dir.path())
-        .assert()
-        .success();
-
-    let content = fs::read_to_string(temp_dir.path().join(".sb").join("config.toml"))
-        .expect("read config.toml");
-    assert!(
-        content.contains("server_url"),
-        "config.toml should contain server_url key"
-    );
-    assert!(
-        content.contains(&server.uri()),
-        "config.toml should contain the server URL"
-    );
-}
-
-#[tokio::test]
 async fn init_without_token_flag_does_not_write_token() {
     let server = MockServer::start().await;
     // SB_TOKEN env var will resolve for the ping, so we need the mock
@@ -137,30 +110,15 @@ async fn init_failed_ping_removes_sb_directory() {
         .current_dir(temp_dir.path())
         .assert()
         .failure()
-        .code(1);
+        .code(1)
+        // "returned 500", not bare "500", which a mock port like 35004 matches.
+        .stderr(predicate::str::contains("returned 500"));
 
     // .sb/ should be completely removed after failed ping
     assert!(
         !temp_dir.path().join(".sb").exists(),
         ".sb/ directory should be removed after failed ping"
     );
-}
-
-#[tokio::test]
-async fn init_failed_ping_exits_with_code_1() {
-    let server = MockServer::start().await;
-    mock_ping_fail(&server).await;
-
-    let temp_dir = tempfile::TempDir::new().expect("create tempdir");
-
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["init", &server.uri(), "--token", "testtoken"])
-        .current_dir(temp_dir.path())
-        .assert()
-        .code(1)
-        .stderr(predicate::str::contains("500").or(predicate::str::contains("server")));
 }
 
 #[tokio::test]
@@ -224,15 +182,16 @@ async fn init_normalizes_trailing_slash_in_url() {
 
     let content = fs::read_to_string(temp_dir.path().join(".sb").join("config.toml"))
         .expect("read config.toml");
+    // Stored exactly as the URI without the trailing slash. (The old
+    // `!contains("//\"")` check couldn't fail: an untrimmed URL ends `:PORT/"`.)
+    let uri = server.uri();
     assert!(
-        !content.contains("//\""),
-        "config.toml should not end URL with trailing slash; got:\n{content}"
+        content.contains(&format!("server_url = \"{uri}\"")),
+        "config.toml should store {uri} with no trailing slash; got:\n{content}"
     );
-    // The stored URL should be the server URI without trailing slash
-    let expected_url = server.uri();
     assert!(
-        content.contains(&expected_url),
-        "config.toml should contain normalized URL {expected_url}; got:\n{content}"
+        !content.contains(&format!("{uri}/")),
+        "trailing slash survived; got:\n{content}"
     );
 }
 
@@ -261,4 +220,47 @@ async fn init_http_url_warns_about_insecure() {
         stderr.contains("not encrypted") || stderr.contains("HTTPS"),
         "stderr should mention encryption or HTTPS; got:\n{stderr}"
     );
+}
+
+/// `sb config get-space` reports the space and where it was resolved from;
+/// SB_SPACE takes precedence over the cwd walk-up.
+#[test]
+fn config_get_space_reports_sb_space_env_as_the_source() {
+    let space = tempfile::TempDir::new().expect("space tempdir");
+    let elsewhere = tempfile::TempDir::new().expect("cwd tempdir");
+    // The cwd is a space too, so this only passes if SB_SPACE wins the
+    // precedence, not merely because walk-up found nothing.
+    fs::create_dir_all(elsewhere.path().join(".sb")).unwrap();
+    fs::write(
+        elsewhere.path().join(".sb/config.toml"),
+        "server_url = \"https://cwd.example.com\"\n",
+    )
+    .unwrap();
+
+    let output = Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .env("SB_SPACE", space.path())
+        .args(["--format", "json", "config", "get-space"])
+        .current_dir(elsewhere.path())
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let v: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    assert_eq!(v["space"], space.path().display().to_string());
+    assert_eq!(v["source"], "env: SB_SPACE");
+
+    // --quiet prints nothing at all.
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .env("SB_SPACE", space.path())
+        .args(["--quiet", "config", "get-space"])
+        .current_dir(elsewhere.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
 }

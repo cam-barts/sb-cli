@@ -26,6 +26,8 @@ async fn lua_eval_returns_result_on_200() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/.runtime/lua"))
+        // The expression must reach the server, not just echo the mock.
+        .and(body_string_contains("2 + 2"))
         .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": 42}"#))
         .mount(&server)
         .await;
@@ -176,7 +178,32 @@ async fn query_returns_json_format() {
 
     let parsed: serde_json::Value =
         serde_json::from_slice(&output).expect("output should be valid JSON");
-    assert!(parsed.is_array(), "output should be a JSON array");
+    assert_eq!(
+        parsed,
+        serde_json::json!([{"name": "index", "size": 100}, {"name": "TODO", "size": 50}])
+    );
+}
+
+#[tokio::test]
+async fn query_empty_array_human_notes_no_results_on_stderr() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.runtime/lua_script"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result": []}"#))
+        .mount(&server)
+        .await;
+
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "query", "from index.tag \"none\""])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("No results."));
 }
 
 #[tokio::test]

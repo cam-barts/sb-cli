@@ -207,13 +207,20 @@ mod tests {
     }
 
     #[test]
-    fn write_completions_produces_script_for_each_shell() {
-        for shell in [Shell::Bash, Shell::Zsh, Shell::Fish] {
+    fn write_completions_produces_shell_specific_script_with_subcommands() {
+        for (shell, marker) in [
+            (Shell::Bash, "complete -F _sb"),
+            (Shell::Zsh, "#compdef sb"),
+            (Shell::Fish, "complete -c sb"),
+        ] {
             let mut buf: Vec<u8> = Vec::new();
             write_completions(shell, &mut buf);
-            assert!(!buf.is_empty(), "expected non-empty script for {shell}");
             let text = String::from_utf8_lossy(&buf);
-            assert!(text.contains("sb"), "script should mention the binary name");
+            assert!(text.contains(marker), "{shell}: missing {marker:?}");
+            assert!(
+                text.contains("completions"),
+                "{shell}: script should know the subcommands"
+            );
         }
     }
 }

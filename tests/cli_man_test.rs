@@ -9,7 +9,12 @@ fn man_prints_roff_for_sb() {
         .arg("man")
         .assert()
         .success()
-        .stdout(predicate::str::contains(".TH sb 1").and(predicate::str::contains(".SH NAME")));
+        .stdout(
+            predicate::str::contains(".TH sb 1")
+                .and(predicate::str::contains(".SH NAME"))
+                // after_help (exit-code table) must carry into the page
+                .and(predicate::str::contains("Exit codes:")),
+        );
 }
 
 /// `sb man --install` writes `sb.1` plus a page per subcommand (including
