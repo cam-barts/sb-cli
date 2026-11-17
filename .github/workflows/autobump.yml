@@ -68,6 +68,8 @@ jobs:
 
       - name: Push commit and tag
         if: steps.bump.outputs.bumped == 'true'
-        run: |
-          git push origin main
-          git push origin "${{ steps.bump.outputs.tag }}"
+        # One atomic push: both refs land or neither does. Two separate pushes
+        # once left the bump commit on main with its tag rejected (v1.11.0), so
+        # no release ran and a re-run could not recover. Now a failure leaves
+        # main untouched and re-running the job is the fix.
+        run: git push --atomic origin main "${{ steps.bump.outputs.tag }}"
