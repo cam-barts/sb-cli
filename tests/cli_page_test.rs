@@ -249,6 +249,32 @@ fn page_list_sort_modified_puts_newest_first() {
 }
 
 #[test]
+fn page_list_sort_created_lists_every_page() {
+    // Birth time can't be set portably, so only the contract that the sort
+    // mode works (including the modified-time fallback) is asserted.
+    let dir = setup_space();
+    write_page(&dir, "one", "x");
+    write_page(&dir, "two", "y");
+
+    let output = sb_cmd(&dir)
+        .args(["page", "list", "--format", "json", "--sort", "created"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let parsed: serde_json::Value = serde_json::from_slice(&output).expect("valid JSON");
+    let mut names: Vec<&str> = parsed
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|e| e["name"].as_str().unwrap())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["one", "two"]);
+}
+
+#[test]
 fn page_list_in_non_initialized_directory_returns_error() {
     let dir = tempfile::tempdir().expect("create tempdir");
     let xdg_dir = tempfile::tempdir().expect("create xdg tempdir");
