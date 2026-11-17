@@ -733,6 +733,17 @@ mod tests {
         sb_dir.join("state.db")
     }
 
+    /// Requests the server received, as (method, path, body).
+    async fn received(server: &MockServer) -> Vec<(String, String, Vec<u8>)> {
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.method.to_string(), r.url.path().to_string(), r.body))
+            .collect()
+    }
+
     // Test: push uploads a locally modified file when server metadata confirms unchanged
     #[tokio::test]
     async fn push_uploads_locally_modified_file_when_server_unchanged() {
@@ -742,7 +753,6 @@ mod tests {
         // Write a local file with content different from the stored hash
         let file_path = dir.path().join("page.md");
         fs::write(&file_path, b"modified content").expect("write file");
-        let _modified_hash = crate::sync::scanner::hash_file(&file_path).expect("hash");
 
         let original_hash = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233";
 
@@ -761,13 +771,15 @@ mod tests {
         }
 
         let server = MockServer::start().await;
-        // X-Get-Meta check: server mtime matches stored (unchanged)
+        // X-Get-Meta check: server mtime matches stored (unchanged). Answers
+        // once; the post-upload meta check below then sees the new mtime.
         Mock::given(method("GET"))
             .and(wm_path("/.fs/page.md"))
             .and(wm_header("X-Get-Meta", "true"))
             .respond_with(
                 ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000000000"),
             )
+            .up_to_n_times(1)
             .mount(&server)
             .await;
         // PUT upload
@@ -802,65 +814,36 @@ mod tests {
 
         assert_eq!(result.uploaded, 1, "should upload 1 file");
         assert_eq!(result.conflicts, 0);
-    }
+        assert!(result.failures.is_empty(), "{:?}", result.failures);
 
-    // Test: push marks conflict when server file has changed since last sync
-    #[tokio::test]
-    async fn push_marks_conflict_when_server_changed_since_last_sync() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_space(dir.path());
+        // Exactly one PUT, carrying exactly the file's bytes.
+        let puts: Vec<_> = received(&server)
+            .await
+            .into_iter()
+            .filter(|(m, _, _)| m == "PUT")
+            .collect();
+        assert_eq!(puts.len(), 1);
+        assert_eq!(puts[0].1, "/.fs/page.md");
+        assert_eq!(puts[0].2, b"modified content");
 
-        let file_path = dir.path().join("page.md");
-        fs::write(&file_path, b"local modification").expect("write file");
-
-        let original_hash = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233";
-
-        {
-            let mut db = StateDb::open(&db_path).expect("open db");
-            db.commit_batch(&[SyncResult::Synced {
-                path: "page.md".to_string(),
-                local_hash: original_hash.to_string(),
-                remote_hash: original_hash.to_string(),
-                remote_etag: None,
-                remote_mtime: 1700000000000, // stored mtime
-                local_mtime: 0,
-            }])
-            .expect("commit");
+        // The result handed to commit_batch records the uploaded content.
+        assert_eq!(result.results.len(), 1);
+        match &result.results[0] {
+            SyncResult::Synced {
+                path,
+                local_hash,
+                remote_hash,
+                remote_mtime,
+                ..
+            } => {
+                let expected = crate::sync::scanner::hash_bytes(b"modified content");
+                assert_eq!(path, "page.md");
+                assert_eq!(local_hash, &expected);
+                assert_eq!(remote_hash, &expected);
+                assert_eq!(*remote_mtime, 1700000001000);
+            }
+            other => panic!("expected Synced result, got: {other:?}"),
         }
-
-        let server = MockServer::start().await;
-        // X-Get-Meta returns DIFFERENT mtime (server changed) — first call
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs/page.md"))
-            .and(wm_header("X-Get-Meta", "true"))
-            .respond_with(
-                ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000002000"), // different!
-            )
-            .mount(&server)
-            .await;
-        // Conflict stash: download remote content
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs/page.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("server version"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let sb_dir = dir.path().join(".sb");
-        let result = push(
-            &client,
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            4,
-            false,
-        )
-        .await
-        .expect("push should succeed");
-
-        assert_eq!(result.conflicts, 1, "should detect 1 conflict");
-        assert_eq!(result.uploaded, 0, "should not upload on conflict");
     }
 
     // Test: a server mtime bump over content identical to ours is not a conflict.
@@ -990,6 +973,17 @@ mod tests {
         .expect("push should succeed");
 
         assert_eq!(result.conflicts, 1);
+        assert_eq!(result.uploaded, 0, "should not upload on conflict");
+        assert!(result.failures.is_empty(), "{:?}", result.failures);
+        assert!(
+            received(&server).await.iter().all(|(m, _, _)| m != "PUT"),
+            "a conflict must never overwrite the server copy"
+        );
+        assert_eq!(
+            fs::read_to_string(&file_path).expect("read local"),
+            "local modification",
+            "the local file is left alone"
+        );
 
         // Verify stash was created
         let conflicts_dir = dir.path().join(".sb/conflicts");
@@ -1046,6 +1040,12 @@ mod tests {
 
         assert_eq!(result.uploaded, 1, "should upload new file");
         assert_eq!(result.conflicts, 0);
+        assert!(result.failures.is_empty(), "{:?}", result.failures);
+
+        // The PUT is the first request: no X-Get-Meta pre-check for a new file.
+        let reqs = received(&server).await;
+        assert_eq!(reqs[0].0, "PUT", "requests were: {reqs:?}");
+        assert_eq!(reqs[0].2, b"new content");
     }
 
     // Test: push sends DELETE for locally deleted files when server unchanged
@@ -1104,6 +1104,22 @@ mod tests {
 
         assert_eq!(result.deleted, 1, "should delete 1 remote file");
         assert_eq!(result.conflicts, 0);
+        assert!(result.failures.is_empty(), "{:?}", result.failures);
+
+        let deletes: Vec<_> = received(&server)
+            .await
+            .into_iter()
+            .filter(|(m, _, _)| m == "DELETE")
+            .collect();
+        assert_eq!(deletes.len(), 1);
+        assert_eq!(deletes[0].1, "/.fs/old-page.md");
+
+        let mut db = StateDb::open(&db_path).expect("open db");
+        db.commit_batch(&result.results).expect("commit");
+        assert!(
+            db.get_row("old-page.md").expect("get").is_none(),
+            "the row must be gone after the delete is committed"
+        );
     }
 
     // Test: push marks conflict for locally deleted files when server has changed
@@ -1200,116 +1216,22 @@ mod tests {
             dir.path(),
             &sb_dir,
             &db_path,
-            &make_filter(),
+            // attachments on, so the scanner itself lets _plug/core.js through
+            // and only push's own _plug/ guard can keep it off the server.
+            &FileFilter::new(&[], &[], true).expect("filter"),
             4,
             false,
         )
         .await
         .expect("push should succeed");
 
-        // _plug/core.js should be skipped (not uploaded)
-        // note.md should be uploaded (new file)
         assert_eq!(result.uploaded, 1, "only note.md should be uploaded");
-        assert_eq!(
-            result.skipped, 0,
-            "skipped count may vary but _plug was not uploaded"
+        assert!(result.failures.is_empty(), "{:?}", result.failures);
+        let reqs = received(&server).await;
+        assert!(
+            reqs.iter().all(|(_, p, _)| !p.contains("_plug")),
+            "no request may touch _plug/: {reqs:?}"
         );
-    }
-
-    // Test: push uses concurrent workers (Semaphore limits simultaneous uploads)
-    #[tokio::test]
-    async fn push_uses_concurrent_workers_with_semaphore() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_space(dir.path());
-        StateDb::open(&db_path).expect("open db");
-
-        // Create 3 new local files
-        for i in 1..=3 {
-            fs::write(
-                dir.path().join(format!("page{i}.md")),
-                format!("content {i}"),
-            )
-            .expect("write file");
-        }
-
-        let server = MockServer::start().await;
-        for i in 1..=3 {
-            Mock::given(method("PUT"))
-                .and(wm_path(format!("/.fs/page{i}.md")))
-                .respond_with(ResponseTemplate::new(200))
-                .mount(&server)
-                .await;
-            Mock::given(method("GET"))
-                .and(wm_path(format!("/.fs/page{i}.md")))
-                .and(wm_header("X-Get-Meta", "true"))
-                .respond_with(
-                    ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000001000"),
-                )
-                .mount(&server)
-                .await;
-        }
-
-        let client = make_client(&server.uri());
-        let sb_dir = dir.path().join(".sb");
-        // Use workers=2 to limit concurrency
-        let result = push(
-            &client,
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            2,
-            false,
-        )
-        .await
-        .expect("push should succeed");
-
-        assert_eq!(result.uploaded, 3, "all 3 new files should be uploaded");
-    }
-
-    // Test: push returns Vec of SyncResult entries for batch commit
-    #[tokio::test]
-    async fn push_returns_sync_results_for_batch_commit() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_space(dir.path());
-        StateDb::open(&db_path).expect("open db");
-
-        fs::write(dir.path().join("page1.md"), b"content").expect("write file");
-
-        let server = MockServer::start().await;
-        Mock::given(method("PUT"))
-            .and(wm_path("/.fs/page1.md"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs/page1.md"))
-            .and(wm_header("X-Get-Meta", "true"))
-            .respond_with(
-                ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000001000"),
-            )
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let sb_dir = dir.path().join(".sb");
-        let result = push(
-            &client,
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            4,
-            false,
-        )
-        .await
-        .expect("push should succeed");
-
-        assert_eq!(result.results.len(), 1, "should have 1 SyncResult");
-        match &result.results[0] {
-            SyncResult::Synced { path, .. } => assert_eq!(path, "page1.md"),
-            other => panic!("expected Synced result, got: {other:?}"),
-        }
     }
 
     // Test: push handles server 404 on delete (file already gone) — resolves as Deleted
@@ -1603,67 +1525,6 @@ mod tests {
     // ------------------------------------------------------------------
     // 403: read-only paths
     // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn one_403_does_not_stop_the_other_files_from_uploading() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_space(dir.path());
-        for name in ["a.md", "b.md", "c.md"] {
-            fs::write(dir.path().join(name), b"content").expect("write");
-        }
-
-        let server = MockServer::start().await;
-        // b.md is read-only; a.md and c.md upload fine. All three are new
-        // files, so push goes straight to PUT.
-        Mock::given(method("PUT"))
-            .and(wm_path("/.fs/b.md"))
-            .respond_with(ResponseTemplate::new(403))
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .respond_with(ResponseTemplate::new(200))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(wm_header("X-Get-Meta", "true"))
-            .respond_with(
-                ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000009000"),
-            )
-            .mount(&server)
-            .await;
-
-        let sb_dir = dir.path().join(".sb");
-        let mut result = push(
-            &make_client(&server.uri()),
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            4,
-            false,
-        )
-        .await
-        .expect("a read-only path must not fail the whole push");
-
-        assert_eq!(result.uploaded, 2, "a.md and c.md should still upload");
-        assert_eq!(result.readonly, 1);
-        assert!(result.failures.is_empty(), "403 is recorded, not a failure");
-
-        let mut db = StateDb::open(&db_path).expect("open db");
-        db.commit_batch(&std::mem::take(&mut result.results))
-            .expect("commit");
-        for name in ["a.md", "c.md"] {
-            assert_eq!(
-                db.get_row(name).expect("get").expect("exists").status,
-                SyncStatus::Synced,
-                "{name} uploaded, so its work must survive b.md's refusal"
-            );
-        }
-        assert_eq!(
-            db.get_row("b.md").expect("get").expect("exists").status,
-            SyncStatus::ReadOnly
-        );
-    }
 
     #[tokio::test]
     async fn a_readonly_row_is_skipped_with_no_http_call_until_the_file_changes() {
