@@ -18,6 +18,7 @@ pub mod revisions;
 #[cfg(feature = "skills")]
 pub mod schema;
 pub mod screenshot;
+pub mod search;
 pub mod server;
 pub mod shell;
 #[cfg(feature = "skills")]

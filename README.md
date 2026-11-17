@@ -317,6 +317,7 @@ when it's installed, otherwise a numbered prompt.
 | `sb sync prune-stashes [path]` | Delete conflict stashes under `.sb/conflicts/` that carry no information: ones byte-identical to the live local file, and duplicates of a newer stash. `--dry-run` lists them; `--all` also clears paths no longer in conflict |
 | `sb lua <expr>` | Evaluate a Space Lua **expression** via the Runtime API. Statements need `--script FILE` (or `-` for stdin) |
 | `sb query <query>` | Run an index query via the Runtime API. `sb query --help` carries worked examples: bare-attribute existence filters, `select` (which projects AND de-duplicates), `==` vs `=` |
+| `sb search <words...>` | Full-text search via the server's search index, no Runtime API needed (SilverBullet 3.0+ with search enabled). `--mode words\|natural\|phrase`, `--scope pages\|tool\|all`, `--limit` |
 | `sb logs` | Stream client + server logs from the Runtime API (`--follow`, `-n N`, `--source client\|server\|both`) |
 | `sb screenshot` | Save a PNG of the headless browser's current state (`--output PATH\|-`) |
 | `sb describe [tag]` | With a tag: sample its objects and report observed fields and types (`--limit N`). With no tag: list every tag in the index with its object count, since `index.tag "NAME"` is the only query source and nothing else tells you which names exist |
