@@ -2787,7 +2787,7 @@ dependencies = [
 
 [[package]]
 name = "sb-cli"
-version = "1.9.1"
+version = "1.9.2"
 dependencies = [
  "assert_cmd",
  "axum",

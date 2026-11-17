@@ -1,3 +1,9 @@
+## v1.9.2 (2026-11-17)
+
+### Fix
+
+- **release**: publish sha256sums.txt with bare filenames (#11)
+
 ## v1.9.1 (2026-09-26)
 
 ### Fix
