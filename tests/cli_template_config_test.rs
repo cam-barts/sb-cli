@@ -42,7 +42,9 @@ dir = "."
 fn sb_in(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // SB_SPACE outranks cwd; `template new` would write into a real space.
+        .env_remove("SB_SPACE");
     cmd
 }
 
@@ -126,5 +128,7 @@ fn fully_qualified_template_name_still_works_with_template_dir_set() {
         ])
         .assert()
         .success();
-    assert!(space.path().join("Projects").join("Thing.md").is_file());
+    let page =
+        std::fs::read_to_string(space.path().join("Projects").join("Thing.md")).expect("new page");
+    assert!(page.contains("In the template dir"), "got: {page:?}");
 }
