@@ -497,6 +497,21 @@ impl SbClient {
             })
     }
 
+    /// GET a Runtime API URL once, WITHOUT the 5xx retry, for the same reason
+    /// as `post_text_once`: a 503 here means the runtime is down, which no
+    /// amount of backoff fixes. Through `send_with_retry` it cost seven seconds
+    /// and the 503 never reached the caller's runtime-unavailable branch.
+    async fn get_runtime_once(&self, url: &str) -> SbResult<reqwest::Response> {
+        self.inner
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| SbError::Network {
+                url: url.to_string(),
+                source: Box::new(e),
+            })
+    }
+
     /// POST `<endpoint>` with a JSON body (e.g., "/.shell").
     ///
     /// The `endpoint` is a path like `/.shell` (NOT a full URL).
@@ -549,7 +564,7 @@ impl SbClient {
             self.base_url,
             runtime_logs_query_string(limit, since)
         );
-        let resp = self.send_with_retry(&url, || self.inner.get(&url)).await?;
+        let resp = self.get_runtime_once(&url).await?;
         if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
             return Err(SbError::HttpStatus {
                 status: 503,
@@ -575,7 +590,7 @@ impl SbClient {
     /// when the Runtime API is not running.
     pub async fn get_runtime_screenshot(&self) -> SbResult<Bytes> {
         let url = format!("{}/.runtime/screenshot", self.base_url);
-        let resp = self.send_with_retry(&url, || self.inner.get(&url)).await?;
+        let resp = self.get_runtime_once(&url).await?;
         if resp.status() == StatusCode::SERVICE_UNAVAILABLE {
             return Err(SbError::HttpStatus {
                 status: 503,
@@ -1864,6 +1879,8 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/.runtime/logs"))
             .respond_with(ResponseTemplate::new(503))
+            // Exactly one request: a down runtime is not retried.
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -1873,7 +1890,10 @@ mod tests {
             .await
             .expect_err("503 should error");
         match err {
-            SbError::HttpStatus { status, .. } => assert_eq!(status, 503),
+            SbError::HttpStatus { status, body, .. } => {
+                assert_eq!(status, 503);
+                assert_eq!(body, "Runtime API not available");
+            }
             other => panic!("expected HttpStatus(503), got: {other:?}"),
         }
     }
@@ -2007,6 +2027,8 @@ mod tests {
         Mock::given(method("GET"))
             .and(path("/.runtime/screenshot"))
             .respond_with(ResponseTemplate::new(503))
+            // Exactly one request: a down runtime is not retried.
+            .expect(1)
             .mount(&server)
             .await;
 
@@ -2016,7 +2038,10 @@ mod tests {
             .await
             .expect_err("503 should error");
         match err {
-            SbError::HttpStatus { status, .. } => assert_eq!(status, 503),
+            SbError::HttpStatus { status, body, .. } => {
+                assert_eq!(status, 503);
+                assert_eq!(body, "Runtime API not available");
+            }
             other => panic!("expected HttpStatus(503), got: {other:?}"),
         }
     }
