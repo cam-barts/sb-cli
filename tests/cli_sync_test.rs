@@ -6,7 +6,7 @@ use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::{Connection, OptionalExtension};
 use tempfile::TempDir;
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{body_string, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 // ---------------------------------------------------------------------------
@@ -55,9 +55,23 @@ fn setup_space(dir: &TempDir, server_url: &str) -> std::path::PathBuf {
 /// Pins `XDG_CONFIG_HOME` to a non-existent path so the dev's real XDG config
 /// can't leak into the subprocess and contaminate the test.
 fn sb_in(space: &std::path::Path) -> Command {
+    let mut cmd = sb_bin();
+    cmd.current_dir(space);
+    cmd
+}
+
+/// The binary with XDG pinned and every `SB_*` variable stripped. SB_SPACE
+/// outranks cwd and SB_SERVER_URL / SB_TOKEN outrank the space's config, so a
+/// dev shell exporting any of them would aim these tests (push, resolve
+/// --keep-remote) at real data.
+fn sb_bin() -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
-    cmd.current_dir(space)
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+    cmd.env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("SB_") {
+            cmd.env_remove(key);
+        }
+    }
     cmd
 }
 
@@ -90,9 +104,7 @@ fn page_move_updates_state_db_deletes_old_path_inserts_new() {
     std::fs::write(dir.path().join("old-page.md"), "# Old Page").unwrap();
 
     // Run sb page move
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+    sb_bin()
         .args(["page", "move", "old-page", "new-page"])
         .current_dir(dir.path())
         .assert()
@@ -149,9 +161,7 @@ fn page_move_works_when_state_db_has_no_row_for_old_path() {
     std::fs::write(dir.path().join("untracked-page.md"), "# Untracked").unwrap();
 
     // Should succeed even though old path has no state.db row
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+    sb_bin()
         .args(["page", "move", "untracked-page", "moved-page"])
         .current_dir(dir.path())
         .assert()
@@ -548,7 +558,17 @@ async fn sync_push_exits_zero_with_no_local_changes() {
     let server = MockServer::start().await;
     let space = setup_space(&dir, &server.uri());
 
-    // No local files -> push has nothing to do
+    // A tracked file whose stored hash matches the bytes on disk: unchanged,
+    // so push must skip it. (An empty space would pass with push deleted.)
+    std::fs::write(space.join("space/kept.md"), "same\n").unwrap();
+    let conn = Connection::open(space.join(".sb/state.db")).unwrap();
+    conn.execute(
+        "INSERT INTO sync_state (path, local_hash, remote_hash, status) VALUES ('kept.md', ?1, ?1, 'synced')",
+        [sb_cli::sync::scanner::hash_bytes(b"same\n")],
+    )
+    .unwrap();
+    drop(conn);
+
     // Mock GET /.fs for any remote deletion check (pusher may call list_files)
     Mock::given(method("GET"))
         .and(path("/.fs"))
@@ -558,15 +578,17 @@ async fn sync_push_exits_zero_with_no_local_changes() {
 
     sb_in(&space).args(["sync", "push"]).assert().success();
 
-    let mutating: Vec<String> = server
+    // Skipped means untouched: no upload, no delete, not even the pre-upload
+    // meta check on the file.
+    let touched: Vec<String> = server
         .received_requests()
         .await
-        .unwrap_or_default()
+        .expect("request recording is on")
         .into_iter()
-        .filter(|r| r.method.as_str() == "PUT" || r.method.as_str() == "DELETE")
+        .filter(|r| matches!(r.method.as_str(), "PUT" | "DELETE") || r.url.path() == "/.fs/kept.md")
         .map(|r| format!("{} {}", r.method, r.url.path()))
         .collect();
-    assert!(mutating.is_empty(), "nothing to push, got: {mutating:?}");
+    assert!(touched.is_empty(), "nothing to push, got: {touched:?}");
 }
 
 // ---------------------------------------------------------------------------
@@ -797,9 +819,7 @@ fn resolve_without_path_exits_with_usage_error() {
     )
     .unwrap();
 
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+    sb_bin()
         .args(["sync", "resolve"])
         .current_dir(dir.path())
         .assert()
@@ -819,9 +839,7 @@ fn resolve_keep_local_and_keep_remote_conflict() {
     )
     .unwrap();
 
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+    sb_bin()
         .args([
             "sync",
             "resolve",
@@ -880,9 +898,7 @@ async fn sync_pull_respects_global_token_flag() {
     drop(conn);
 
     // Run with --token flag placed BEFORE the subcommand (global flag)
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+    sb_bin()
         .current_dir(&space)
         .args(["--token", "override-token", "sync", "pull"])
         .assert()
@@ -997,14 +1013,19 @@ fn resolve_all_keep_remote_resolves_every_conflict() {
 #[tokio::test]
 async fn resolve_all_keep_local_uploads_every_file() {
     let server = MockServer::start().await;
+    // The body matchers are the point: uploading the stash (remote) bytes
+    // instead of the local ones would leave the server stale while state.db
+    // records the conflict as resolved.
     Mock::given(method("PUT"))
         .and(path("/.fs/Doc.md"))
+        .and(body_string("local doc\n"))
         .respond_with(ResponseTemplate::new(200))
         .expect(1)
         .mount(&server)
         .await;
     Mock::given(method("PUT"))
         .and(path("/.fs/Journal/Entry.md"))
+        .and(body_string("local entry\n"))
         .respond_with(ResponseTemplate::new(200))
         .expect(1)
         .mount(&server)
@@ -1052,6 +1073,51 @@ async fn resolve_all_keep_local_uploads_every_file() {
         Some(1750000000000)
     );
     // Mock `.expect(1)` assertions fire on drop.
+    drop(server);
+}
+
+/// `--force` with no --keep-* means keep-local, and is what lets a script
+/// (non-TTY) resolve without a prompt. Getting the default backwards would
+/// silently overwrite the user's local edit with the server copy.
+#[tokio::test]
+async fn resolve_force_keeps_local_without_prompting() {
+    let server = MockServer::start().await;
+    Mock::given(method("PUT"))
+        .and(path("/.fs/Doc.md"))
+        .and(body_string("local doc\n"))
+        .respond_with(ResponseTemplate::new(200))
+        .expect(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/.fs/Doc.md"))
+        .respond_with(ResponseTemplate::new(200).insert_header("X-Last-Modified", "1750000000000"))
+        .mount(&server)
+        .await;
+
+    let dir = TempDir::new().unwrap();
+    let space = setup_two_conflicts(&dir, &server.uri());
+
+    sb_in(&space)
+        .args(["sync", "resolve", "Doc.md", "--force"])
+        .assert()
+        .success();
+
+    assert_eq!(
+        std::fs::read_to_string(space.join("space").join("Doc.md")).unwrap(),
+        "local doc\n"
+    );
+    assert_eq!(status_of(&space, "Doc.md").as_deref(), Some("synced"));
+    assert!(!space
+        .join(".sb")
+        .join("conflicts")
+        .join("Doc.20260901T120000.md")
+        .exists());
+    // Only the named file was resolved.
+    assert_eq!(
+        status_of(&space, "Journal/Entry.md").as_deref(),
+        Some("conflict")
+    );
     drop(server);
 }
 
