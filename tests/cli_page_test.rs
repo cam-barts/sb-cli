@@ -454,8 +454,9 @@ fn page_create_unknown_template_is_not_found_and_writes_nothing() {
     sb_cmd(&dir)
         .args(["page", "create", "standup", "--template", "Templates/Nope"])
         .assert()
-        .failure()
-        .code(4);
+        .code(4)
+        // Not-found for the right reason: the template, not some other page.
+        .stderr(predicate::str::contains("Templates/Nope"));
     assert!(!dir.path().join("standup.md").exists());
 }
 

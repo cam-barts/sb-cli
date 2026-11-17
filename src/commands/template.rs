@@ -1357,6 +1357,10 @@ mod tests {
             let server = MockServer::start().await;
             Mock::given(method("GET"))
                 .and(path("/.fs/Tmpl.md"))
+                .and(wiremock::matchers::header(
+                    "Authorization",
+                    "Bearer test-token",
+                ))
                 .respond_with(ResponseTemplate::new(200).set_body_string("remote body"))
                 .mount(&server)
                 .await;

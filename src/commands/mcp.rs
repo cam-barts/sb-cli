@@ -499,32 +499,27 @@ mod imp {
 
         #[tokio::test]
         async fn page_create_rejects_path_traversal_and_writes_nothing() {
-            let tmp = make_space(None);
-            // Reserve a unique name just outside the space, then free it, so a
-            // leaked write is detectable and cannot be a stale leftover.
-            let reserved = tempfile::Builder::new()
-                .suffix(".md")
-                .tempfile_in(tmp.path().parent().unwrap())
-                .unwrap();
-            let outer = reserved.path().to_path_buf();
-            drop(reserved);
-            let stem = outer.file_stem().unwrap().to_str().unwrap().to_string();
+            let tmp = content_subdir_space();
+            // Just outside the content dir, but still inside this test's own
+            // tempdir: a leaked write is detectable and never touches /tmp.
+            let outer = tmp.path().join("escape.md");
             let _g = SbSpaceGuard::set(tmp.path());
 
-            let res = SbMcpServer::new()
-                .page_create(create_args(&format!("../{stem}"), "x"))
-                .await;
-            assert!(res.is_err());
+            let err = SbMcpServer::new()
+                .page_create(create_args("../escape", "x"))
+                .await
+                .unwrap_err();
+            assert!(err.message.contains("traversal"), "got: {err:?}");
             assert!(
                 !outer.exists(),
-                "traversal must not write outside the space"
+                "traversal must not write outside the content dir"
             );
         }
 
         #[tokio::test]
         async fn page_read_returns_content_and_maps_missing_and_traversal_to_errors() {
-            let tmp = make_space(None);
-            std::fs::write(tmp.path().join("Note.md"), "hello\n").unwrap();
+            let tmp = content_subdir_space();
+            std::fs::write(tmp.path().join("content/Note.md"), "hello\n").unwrap();
             let _g = SbSpaceGuard::set(tmp.path());
             let server = SbMcpServer::new();
 
@@ -540,15 +535,23 @@ mod imp {
                 "got: {missing:?}"
             );
 
-            // A real file just outside the space must stay unreadable.
-            let secret = tempfile::Builder::new()
-                .suffix(".md")
-                .tempfile_in(tmp.path().parent().unwrap())
-                .unwrap();
-            std::fs::write(secret.path(), "secret").unwrap();
-            let stem = secret.path().file_stem().unwrap().to_str().unwrap();
-            let res = server.page_read(read_args(&format!("../{stem}"))).await;
-            assert!(res.is_err(), "traversal must not read outside the space");
+            // A real file just outside the content dir must stay unreadable.
+            std::fs::write(tmp.path().join("secret.md"), "secret").unwrap();
+            let err = server.page_read(read_args("../secret")).await.unwrap_err();
+            assert!(err.message.contains("traversal"), "got: {err:?}");
+        }
+
+        /// A space whose content lives in `content/`, so "outside the content
+        /// dir" is still inside the test's own tempdir.
+        fn content_subdir_space() -> tempfile::TempDir {
+            let tmp = make_space(None);
+            std::fs::write(
+                tmp.path().join(".sb/config.toml"),
+                "[sync]\ndir = \"content\"\n",
+            )
+            .unwrap();
+            std::fs::create_dir_all(tmp.path().join("content")).unwrap();
+            tmp
         }
 
         #[tokio::test]
@@ -616,11 +619,18 @@ mod imp {
                 .respond_with(ResponseTemplate::new(200))
                 .mount(&mock)
                 .await;
+            // A down runtime (503 on the probe) must surface as runtime_api=false.
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua"))
+                .respond_with(ResponseTemplate::new(503))
+                .mount(&mock)
+                .await;
             let tmp = make_space(Some(&mock.uri()));
             let _g = SbSpaceGuard::set(tmp.path());
 
             let Json(ping) = SbMcpServer::new().server_ping().await.unwrap();
             assert!(ping.reachable);
+            assert!(!ping.runtime_api, "a 503 probe means no Runtime API");
 
             mock.reset().await;
             Mock::given(method("GET"))

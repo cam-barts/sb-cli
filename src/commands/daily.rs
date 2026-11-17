@@ -1575,7 +1575,8 @@ dateFormat = "%Y-%m-%d"
     /// (N = days back). Midnight caveat: the production code reads the wall
     /// clock itself, so a run straddling local midnight can see a shifted
     /// "today" (same limitation as the other daily tests).
-    fn seed_last_days(space_root: &std::path::Path) {
+    /// Seeds today and the three days before it; returns the "today" it used.
+    fn seed_last_days(space_root: &std::path::Path) -> jiff::civil::Date {
         use jiff::ToSpan;
         let today = jiff::Zoned::now().date();
         for back in 0..=3i32 {
@@ -1586,6 +1587,13 @@ dateFormat = "%Y-%m-%d"
                 &format!("* [time:: 09:00] day-{back}\n"),
             );
         }
+        today
+    }
+
+    /// collect_entries reads the clock itself. If midnight passed between
+    /// seeding and reading, the result is inconclusive, not wrong.
+    fn crossed_midnight(seeded: jiff::civil::Date) -> bool {
+        jiff::Zoned::now().date() != seeded
     }
 
     #[test]
@@ -1593,12 +1601,15 @@ dateFormat = "%Y-%m-%d"
         let tmp = tempfile::tempdir().unwrap();
         let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
-        seed_last_days(tmp.path());
+        let seeded = seed_last_days(tmp.path());
 
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
         args.yesterday = true;
         let got = collect_entries(tmp.path(), &config, &args).unwrap();
+        if crossed_midnight(seeded) {
+            return;
+        }
         let bodies: Vec<&str> = got.iter().map(|e| e.body.as_str()).collect();
         assert_eq!(bodies, vec!["day-1"]);
     }
@@ -1608,17 +1619,21 @@ dateFormat = "%Y-%m-%d"
         let tmp = tempfile::tempdir().unwrap();
         let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
-        seed_last_days(tmp.path());
+        let seeded = seed_last_days(tmp.path());
 
         let fmt = OutputFormat::Json;
         let mut args = default_args(&fmt);
         args.offset = Some(-3);
         let got = collect_entries(tmp.path(), &config, &args).unwrap();
+        args.offset = Some(0);
+        let got_today = collect_entries(tmp.path(), &config, &args).unwrap();
+        if crossed_midnight(seeded) {
+            return;
+        }
         let bodies: Vec<&str> = got.iter().map(|e| e.body.as_str()).collect();
         assert_eq!(bodies, vec!["day-3"]);
 
-        args.offset = Some(0);
-        let got = collect_entries(tmp.path(), &config, &args).unwrap();
+        let got = got_today;
         let bodies: Vec<&str> = got.iter().map(|e| e.body.as_str()).collect();
         assert_eq!(bodies, vec!["day-0"]);
     }

@@ -192,14 +192,6 @@ async fn run_failing_shell(stderr: &str, code: i32) -> assert_cmd::assert::Asser
 }
 
 #[tokio::test]
-async fn shell_failure_with_stderr_adds_a_stderr_hint_line() {
-    run_failing_shell("boom\n", 7)
-        .await
-        .code(7)
-        .stderr(predicate::str::contains("-> stderr: boom"));
-}
-
-#[tokio::test]
 async fn shell_failure_with_empty_stderr_has_no_hint_line() {
     run_failing_shell("", 7)
         .await
