@@ -1,3 +1,14 @@
+## v1.10.0 (2026-11-17)
+
+### Feat
+
+- **runtime**: ask the server to catch up its index before runtime calls
+
+### Fix
+
+- **client**: read x-silverbullet-revision for conditional writes
+- **sync**: never sync dot-prefixed paths, and leave filtered paths alone
+
 ## v1.9.2 (2026-11-17)
 
 ### Feat
