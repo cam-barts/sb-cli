@@ -425,17 +425,13 @@ pub async fn execute_status(format: &OutputFormat, quiet: bool) -> SbResult<()> 
     })??;
 
     // Scan local files
-    let (ex, inc) = (excludes, includes);
-    let attachments = ctx.config.sync_attachments.value;
-    let local_files = tokio::task::spawn_blocking(move || -> SbResult<_> {
-        let filter = FileFilter::new(&ex, &inc, attachments)?;
-        let scanner = LocalScanner::new(filter);
-        scanner.scan(&content_dir_owned)
-    })
-    .await
-    .map_err(|e| SbError::Internal {
-        message: format!("local scan task panicked: {e}"),
-    })??;
+    let filter = FileFilter::new(&excludes, &includes, ctx.config.sync_attachments.value)?;
+    let scanner = LocalScanner::new(filter.clone());
+    let local_files = tokio::task::spawn_blocking(move || scanner.scan(&content_dir_owned))
+        .await
+        .map_err(|e| SbError::Internal {
+            message: format!("local scan task panicked: {e}"),
+        })??;
 
     // Scan for server/editor-written conflict markers -- a DISTINCT kind of
     // conflict from `state.db`'s stash-based one above. This is a plain
@@ -492,9 +488,14 @@ pub async fn execute_status(format: &OutputFormat, quiet: bool) -> SbResult<()> 
         }
     }
 
-    // Deleted: synced rows with no corresponding local file
+    // Deleted: synced rows with no corresponding local file. A row outside the
+    // filter is missing from the scan by design and sync leaves it alone, so
+    // it is not a pending deletion.
     for (path, row) in &state_map {
-        if row.status == SyncStatus::Synced && !local_map.contains_key(path) {
+        if row.status == SyncStatus::Synced
+            && !local_map.contains_key(path)
+            && filter.should_sync(path)
+        {
             deleted_count += 1;
         }
     }
