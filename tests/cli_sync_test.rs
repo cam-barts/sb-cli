@@ -259,6 +259,15 @@ async fn dry_run_renders_empty_plan_and_human_table() {
         .assert()
         .success()
         .stdout(predicate::str::contains("Nothing to sync").not());
+    let out = sb_in(&space)
+        .args(["--quiet", "sync", "pull", "--dry-run", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(out.get_output().stdout.clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&stdout).expect("--quiet JSON is still JSON"),
+        serde_json::json!([])
+    );
 
     std::fs::write(space.join("space/local-new.md"), "x").unwrap();
     sb_in(&space)
