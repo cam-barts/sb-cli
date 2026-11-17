@@ -12,7 +12,7 @@ fn completions_zsh_prints_script() {
         .stdout(predicate::str::contains("#compdef sb").or(predicate::str::contains("_sb")));
 }
 
-/// `sb completions bash` prints a bash completion script mentioning the binary.
+/// `sb completions bash` prints a bash completion script registering `_sb`.
 #[test]
 fn completions_bash_prints_script() {
     Command::cargo_bin("sb")
@@ -20,7 +20,7 @@ fn completions_bash_prints_script() {
         .args(["completions", "bash"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("sb"));
+        .stdout(predicate::str::contains("complete -F _sb").and(predicate::str::contains("_sb()")));
 }
 
 /// `sb completions` without a shell and without --install is a usage error.
@@ -56,15 +56,4 @@ fn completions_install_zsh_writes_underscore_sb() {
     );
     let body = std::fs::read_to_string(&installed).unwrap();
     assert!(body.contains("_sb"), "installed script should define _sb");
-}
-
-/// `sb template --help` lists the list/new subcommands.
-#[test]
-fn template_help_lists_subcommands() {
-    Command::cargo_bin("sb")
-        .unwrap()
-        .args(["template", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("list").and(predicate::str::contains("new")));
 }

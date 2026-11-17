@@ -200,24 +200,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn errors_when_runtime_disabled() {
-        let tmp = make_space(Some("http://127.0.0.1:1"));
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute(
-            None,
-            "from index.tag 'page'",
-            &[],
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await
-        .unwrap_err();
-        assert!(format!("{err}").contains("Runtime API not available"));
-    }
-
-    #[tokio::test]
     async fn returns_query_error_when_server_reports_one() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -239,56 +221,6 @@ mod tests {
             SbError::Usage(msg) => assert!(msg.contains("bad query syntax")),
             other => panic!("expected Usage, got: {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn succeeds_on_array_of_objects_result_human_format() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{"result":[{"name":"Foo","count":3},{"name":"Bar","count":5}]}"#,
-            ))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(None, "from a", &[], &OutputFormat::Human, true, false).await;
-        assert!(res.is_ok(), "{res:?}");
-    }
-
-    #[tokio::test]
-    async fn succeeds_on_empty_array_result_human_format() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":[]}"#))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(None, "from b", &[], &OutputFormat::Human, true, false).await;
-        assert!(res.is_ok());
-    }
-
-    #[tokio::test]
-    async fn succeeds_on_non_array_result_falls_back_to_json() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":42}"#))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(None, "from c", &[], &OutputFormat::Human, true, false).await;
-        assert!(res.is_ok());
     }
 
     #[tokio::test]

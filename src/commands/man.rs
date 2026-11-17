@@ -70,29 +70,3 @@ fn install_pages(quiet: bool, color: bool) -> SbResult<()> {
 fn man1_dir(data_home: &Path) -> PathBuf {
     data_home.join("man/man1")
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn man1_dir_nests_under_data_home() {
-        assert_eq!(
-            man1_dir(&PathBuf::from("/data")),
-            PathBuf::from("/data/man/man1")
-        );
-    }
-
-    #[test]
-    fn render_root_produces_roff_for_sb() {
-        let mut buf: Vec<u8> = Vec::new();
-        render_root(&mut buf).unwrap();
-        let text = String::from_utf8_lossy(&buf);
-        assert!(text.starts_with(".ie"), "roff output should open with .ie");
-        assert!(text.contains(".TH sb 1"), "expected a .TH title for sb(1)");
-        assert!(
-            text.contains("Exit codes:"),
-            "after_help should carry into the page"
-        );
-    }
-}

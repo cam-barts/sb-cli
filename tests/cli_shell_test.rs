@@ -32,6 +32,7 @@ async fn shell_disabled_prints_warning() {
         .current_dir(dir.path())
         .assert()
         .failure()
+        .code(2)
         .stderr(predicate::str::contains("arbitrary command execution"));
 }
 

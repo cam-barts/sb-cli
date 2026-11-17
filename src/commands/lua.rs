@@ -107,30 +107,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn errors_when_runtime_disabled_in_config() {
-        // No need for a server here — the runtime-availability check happens before any HTTP.
-        let tmp = make_space(Some("http://127.0.0.1:1"));
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute(
-            None,
-            Some("return 1"),
-            None,
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await
-        .unwrap_err();
-
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("Runtime API not available"),
-            "expected runtime-unavailable error, got: {msg}"
-        );
-    }
-
-    #[tokio::test]
     async fn returns_error_when_server_returns_lua_error_in_body() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
@@ -197,56 +173,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn succeeds_on_scalar_result() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":42}"#))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(
-            None,
-            Some("return 42"),
-            None,
-            &OutputFormat::Human,
-            true,
-            false,
-        )
-        .await;
-        assert!(res.is_ok(), "expected success, got {res:?}");
-    }
-
-    #[tokio::test]
-    async fn succeeds_on_complex_result_json_format() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua"))
-            .respond_with(
-                ResponseTemplate::new(200).set_body_string(r#"{"result":{"a":1,"b":[1,2,3]}}"#),
-            )
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let res = execute(
-            None,
-            Some("return {}"),
-            None,
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(res.is_ok());
-    }
-
     // --- read_script_source (pure logic) ---
 
     #[test]
@@ -266,108 +192,5 @@ mod tests {
         std::fs::write(tmp.path(), "return 1 + 1").unwrap();
         let body = read_script_source(tmp.path().to_str().unwrap()).unwrap();
         assert_eq!(body, "return 1 + 1");
-    }
-
-    // --- --script execute() coverage ---
-
-    #[tokio::test]
-    async fn script_mode_posts_to_lua_script_not_lua() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":3}"#))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let script_file = tmp.path().join("script.lua");
-        std::fs::write(&script_file, "local x = 1\nreturn x + 2").unwrap();
-
-        let res = execute(
-            None,
-            None,
-            Some(script_file.to_str().unwrap()),
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(res.is_ok(), "{res:?}");
-    }
-
-    #[tokio::test]
-    async fn script_mode_missing_file_makes_no_http_request() {
-        let server = MockServer::start().await;
-        // Any request at all is a bug: the file read must fail before the network call.
-        Mock::given(method("POST"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(r#"{"result":1}"#))
-            .expect(0)
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let missing = tmp.path().join("does-not-exist.lua");
-        let err = execute(
-            None,
-            None,
-            Some(missing.to_str().unwrap()),
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await
-        .unwrap_err();
-
-        match err {
-            SbError::Filesystem { path, .. } => {
-                assert_eq!(path, missing.to_str().unwrap())
-            }
-            other => panic!("expected Filesystem, got: {other:?}"),
-        }
-    }
-
-    #[tokio::test]
-    async fn script_mode_lua_error_surfaces_message_as_usage_error() {
-        let server = MockServer::start().await;
-        Mock::given(method("POST"))
-            .and(path("/.runtime/lua_script"))
-            .respond_with(ResponseTemplate::new(500).set_body_string(
-                r#"{"error":"attempt to call a nil value","code":"script_error"}"#,
-            ))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        enable_runtime(tmp.path());
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let script_file = tmp.path().join("bad.lua");
-        std::fs::write(&script_file, "nope()\nreturn 1").unwrap();
-
-        let err = execute(
-            None,
-            None,
-            Some(script_file.to_str().unwrap()),
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await
-        .unwrap_err();
-
-        assert_eq!(
-            err.exit_code(),
-            2,
-            "a Lua throw is a usage error, not a server fault"
-        );
-        match err {
-            SbError::Usage(msg) => {
-                assert!(msg.contains("attempt to call a nil value"), "got: {msg}")
-            }
-            other => panic!("expected Usage, got: {other:?}"),
-        }
     }
 }

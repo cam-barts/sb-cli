@@ -89,17 +89,15 @@ mod tests {
 
     #[test]
     fn flavor_identifier_matches_build() {
-        // The identifier must disambiguate the two flavors: neither is a
-        // substring of the other's asset stem.
-        let id = flavor_identifier();
-        if cfg!(feature = "ai") {
-            assert_eq!(id, "sb-ai-");
+        // The identifier must select this build's own release asset and never
+        // the other flavor's (an upgrade must not silently swap flavors).
+        let (own, other) = if cfg!(feature = "ai") {
+            ("sb-ai-v1.0.0-x86_64-linux", "sb-v1.0.0-x86_64-linux")
         } else {
-            assert_eq!(id, "sb-v");
-            assert!(
-                !"sb-ai-v1.0.0-x".contains(id),
-                "slim id must not match ai assets"
-            );
-        }
+            ("sb-v1.0.0-x86_64-linux", "sb-ai-v1.0.0-x86_64-linux")
+        };
+        let id = flavor_identifier();
+        assert!(own.contains(id), "{id:?} must match {own}");
+        assert!(!other.contains(id), "{id:?} must not match {other}");
     }
 }

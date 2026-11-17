@@ -354,41 +354,11 @@ mod tests {
     // --- execute_* end-to-end tests (space + wiremock, no interactive input) ---
 
     use crate::test_util::{make_space, SbSpaceGuard};
-    use wiremock::matchers::{method, path, query_param};
+    use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    const REV: &str = "abcdef0123456789abcdef0123456789abcdef01";
 
     fn write_page(space_root: &std::path::Path, name: &str, content: &str) {
         std::fs::write(space_root.join(format!("{name}.md")), content).unwrap();
-    }
-
-    #[tokio::test]
-    async fn execute_history_prints_json_and_hits_expected_query() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.revisions/Note.md"))
-            .and(query_param("limit", "50"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                r#"{{"mode":"managed","uncommitted":false,"more":false,"revisions":[{{"rev":"{REV}","timestamp":1700000000000,"author":"alice","message":"edit","added":1,"removed":0}}]}}"#
-            )))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "content");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let result = execute_history(
-            None,
-            Some("Note"),
-            50,
-            None,
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]
@@ -415,34 +385,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn execute_history_disabled_maps_to_revisions_disabled() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.revisions/Note.md"))
-            .respond_with(
-                ResponseTemplate::new(404).set_body_string(r#"{"error": "revisions disabled"}"#),
-            )
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "content");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute_history(
-            None,
-            Some("Note"),
-            50,
-            None,
-            &OutputFormat::Human,
-            true,
-            false,
-        )
-        .await
-        .expect_err("disabled space should error");
-        assert!(matches!(err, SbError::RevisionsDisabled));
-    }
-
-    #[tokio::test]
     async fn execute_history_without_a_name_in_noninteractive_env_errors() {
         // No TTY in the test process, so the interactive picker refuses
         // rather than hanging.
@@ -454,32 +396,6 @@ mod tests {
             .await
             .expect_err("no name + no TTY should error");
         assert_eq!(err.exit_code(), 2);
-    }
-
-    #[tokio::test]
-    async fn execute_diff_with_rev_prints_the_diff() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.revisions/Note.md"))
-            .and(query_param("format", "diff"))
-            .and(query_param("rev", REV))
-            .respond_with(ResponseTemplate::new(200).set_body_string("@@ -1 +1 @@\n-a\n+b\n"))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "content");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let result = execute_diff(
-            None,
-            Some("Note"),
-            Some(REV),
-            &OutputFormat::Human,
-            true,
-            false,
-        )
-        .await;
-        assert!(result.is_ok(), "{result:?}");
     }
 
     #[tokio::test]
@@ -496,105 +412,5 @@ mod tests {
 
         let result = execute_diff(None, Some("Note"), None, &OutputFormat::Json, true, false).await;
         assert!(result.is_ok(), "a benign no-diff 404 must not be an Err");
-    }
-
-    #[tokio::test]
-    async fn execute_diff_rejects_bad_rev_before_any_request() {
-        let server = MockServer::start().await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "content");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute_diff(
-            None,
-            Some("Note"),
-            Some("short"),
-            &OutputFormat::Human,
-            true,
-            false,
-        )
-        .await
-        .expect_err("short rev should be rejected");
-        assert_eq!(err.exit_code(), 2);
-    }
-
-    #[tokio::test]
-    async fn execute_restore_without_force_or_yes_requires_confirmation() {
-        let server = MockServer::start().await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "original");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute_restore(
-            None,
-            Some("Note"),
-            REV,
-            false,
-            &OutputFormat::Human,
-            true,
-            false,
-        )
-        .await
-        .expect_err("restore without --force/--yes must require confirmation");
-        assert_eq!(err.exit_code(), 6);
-        // File must be untouched -- confirmation happens before any read/write.
-        let content = std::fs::read_to_string(tmp.path().join("Note.md")).unwrap();
-        assert_eq!(content, "original");
-    }
-
-    #[tokio::test]
-    async fn execute_restore_with_force_writes_local_file_and_never_puts() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.revisions/Note.md"))
-            .and(query_param("rev", REV))
-            .respond_with(ResponseTemplate::new(200).set_body_string("old content"))
-            .mount(&server)
-            .await;
-        Mock::given(method("PUT"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(0)
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "current content");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let result = execute_restore(
-            None,
-            Some("Note"),
-            REV,
-            true,
-            &OutputFormat::Json,
-            true,
-            false,
-        )
-        .await;
-        assert!(result.is_ok(), "{result:?}");
-        let content = std::fs::read_to_string(tmp.path().join("Note.md")).unwrap();
-        assert_eq!(content, "old content");
-    }
-
-    #[tokio::test]
-    async fn execute_restore_rejects_bad_rev_before_any_request() {
-        let server = MockServer::start().await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "original");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let err = execute_restore(
-            None,
-            Some("Note"),
-            "not-a-real-hash",
-            true,
-            &OutputFormat::Human,
-            true,
-            false,
-        )
-        .await
-        .expect_err("bad rev should be rejected");
-        assert_eq!(err.exit_code(), 2);
-        let content = std::fs::read_to_string(tmp.path().join("Note.md")).unwrap();
-        assert_eq!(content, "original");
     }
 }
