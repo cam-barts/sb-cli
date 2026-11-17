@@ -60,6 +60,25 @@ async fn shell_enabled_sends_post_and_prints_stdout() {
 }
 
 #[tokio::test]
+async fn shell_with_a_rejected_token_exits_auth() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/.shell"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let dir = setup_space(&server.uri(), true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["shell", "ls"])
+        .current_dir(dir.path())
+        .assert()
+        .code(3);
+}
+
+#[tokio::test]
 async fn shell_enabled_prints_stderr() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
