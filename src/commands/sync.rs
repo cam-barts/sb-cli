@@ -346,11 +346,12 @@ fn format_dry_run_output(
     quiet: bool,
 ) -> SbResult<()> {
     if actions.is_empty() {
-        if !quiet {
-            match format {
-                OutputFormat::Json => println!("[]"),
-                OutputFormat::Human => println!("Nothing to sync"),
-            }
+        match format {
+            // `[]` is the data, not a notice: --quiet must not leave a JSON
+            // consumer with an empty stdout that `jq` can't parse.
+            OutputFormat::Json => println!("[]"),
+            OutputFormat::Human if !quiet => println!("Nothing to sync"),
+            OutputFormat::Human => {}
         }
         return Ok(());
     }
