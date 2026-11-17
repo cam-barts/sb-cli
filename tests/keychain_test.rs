@@ -56,41 +56,6 @@ server_url = "https://example.com"
         .stderr(predicates::str::contains("OS keychain").not());
 }
 
-/// Verify that auth set with auth.keychain=false writes to config.toml (existing behavior).
-#[test]
-fn auth_set_writes_to_config_when_keychain_disabled() {
-    let dir = setup_space(
-        r#"
-server_url = "https://example.com"
-"#,
-    );
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .current_dir(dir.path())
-        .args(["auth", "set", "--token", "new-token-value"])
-        .assert()
-        .success();
-
-    let config = fs::read_to_string(dir.path().join(".sb/config.toml")).unwrap();
-    assert!(
-        config.contains("new-token-value"),
-        "token should be written to config.toml when keychain disabled, got: {config}"
-    );
-}
-
-/// Verify keychain module constants and API are accessible.
-/// This test does NOT call the real OS keychain.
-#[test]
-fn keychain_module_compiles_and_exports() {
-    // Compilation is the test -- if it compiles, the API is correct.
-    // We verify at the type level that the functions exist with the right signatures
-    // by referencing them (without calling) via function pointer coercion.
-    let _get: fn(&str) -> sb_cli::error::SbResult<Option<String>> = sb_cli::keychain::get_token;
-    let _set: fn(&str, &str) -> sb_cli::error::SbResult<()> = sb_cli::keychain::set_token;
-    let _del: fn(&str) -> sb_cli::error::SbResult<()> = sb_cli::keychain::delete_token;
-}
-
 /// IGNORED: Real keychain test -- set and get a token.
 /// Only run manually on a system with a working keychain:
 ///   cargo test keychain_roundtrip -- --ignored

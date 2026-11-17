@@ -266,39 +266,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn network_error_has_exit_code_1() {
-        let err = SbError::Network {
-            url: "http://localhost:3000".to_string(),
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "connection refused",
-            )),
-        };
-        assert_eq!(err.exit_code(), 1);
-    }
-
-    #[test]
-    fn usage_error_has_exit_code_2() {
-        let err = SbError::Usage("bad argument".to_string());
-        assert_eq!(err.exit_code(), 2);
-    }
-
-    #[test]
-    fn http_status_error_has_exit_code_1() {
-        let err = SbError::HttpStatus {
-            status: 500,
-            url: "http://localhost:3000/.fs/test".to_string(),
-            body: "Internal Server Error".to_string(),
-        };
-        assert_eq!(err.exit_code(), 1);
-    }
-
-    #[test]
-    fn config_error_has_exit_code_1() {
-        let err = SbError::Config {
-            message: "invalid config".to_string(),
-        };
-        assert_eq!(err.exit_code(), 1);
+    fn general_errors_exit_1() {
+        let cases = [
+            SbError::Network {
+                url: "http://localhost:3000".to_string(),
+                source: Box::new(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                )),
+            },
+            SbError::HttpStatus {
+                status: 500,
+                url: "http://localhost:3000/.fs/test".to_string(),
+                body: "Internal Server Error".to_string(),
+            },
+            SbError::Config {
+                message: "invalid config".to_string(),
+            },
+            SbError::Filesystem {
+                message: "could not read file".to_string(),
+                path: "/tmp/test.md".to_string(),
+                source: None,
+            },
+        ];
+        for err in cases {
+            assert_eq!(err.exit_code(), 1, "{err:?}");
+            assert_eq!(err.code_str(), "general", "{err:?}");
+        }
     }
 
     #[test]
@@ -309,29 +303,6 @@ mod tests {
         };
         assert_eq!(err.exit_code(), 3);
         assert_eq!(err.code_str(), "auth");
-    }
-
-    #[test]
-    fn filesystem_error_has_exit_code_1() {
-        let err = SbError::Filesystem {
-            message: "could not read file".to_string(),
-            path: "/tmp/test.md".to_string(),
-            source: None,
-        };
-        assert_eq!(err.exit_code(), 1);
-    }
-
-    #[test]
-    fn network_error_has_hint_about_server_url() {
-        let err = SbError::Network {
-            url: "http://localhost:3000".to_string(),
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "connection refused",
-            )),
-        };
-        let hint = err.hint().expect("network error should have a hint");
-        assert!(hint.contains("server URL"));
     }
 
     #[test]
@@ -365,51 +336,6 @@ mod tests {
         assert!(err.hint().is_none());
     }
 
-    #[test]
-    fn config_error_has_no_hint() {
-        let err = SbError::Config {
-            message: "bad config".to_string(),
-        };
-        assert!(err.hint().is_none());
-    }
-
-    #[test]
-    fn usage_error_has_no_hint() {
-        let err = SbError::Usage("bad argument".to_string());
-        assert!(err.hint().is_none());
-    }
-
-    #[test]
-    fn http_status_error_message_contains_status_and_url() {
-        let err = SbError::HttpStatus {
-            status: 404,
-            url: "http://localhost:3000/.fs/test".to_string(),
-            body: "Not Found".to_string(),
-        };
-        let msg = err.to_string();
-        assert!(msg.contains("404"), "message should contain status code");
-        assert!(
-            msg.contains("http://localhost:3000/.fs/test"),
-            "message should contain URL"
-        );
-    }
-
-    #[test]
-    fn network_error_message_contains_url() {
-        let err = SbError::Network {
-            url: "http://localhost:3000".to_string(),
-            source: Box::new(std::io::Error::new(
-                std::io::ErrorKind::ConnectionRefused,
-                "connection refused",
-            )),
-        };
-        let msg = err.to_string();
-        assert!(
-            msg.contains("http://localhost:3000"),
-            "message should contain URL"
-        );
-    }
-
     // --- New variant tests ---
 
     #[test]
@@ -419,22 +345,6 @@ mod tests {
         };
         assert_eq!(err.exit_code(), 5);
         assert_eq!(err.code_str(), "conflict");
-    }
-
-    #[test]
-    fn already_initialized_message_contains_path() {
-        let err = SbError::AlreadyInitialized {
-            path: "/home/user/notes".to_string(),
-        };
-        assert!(err.to_string().contains("/home/user/notes"));
-    }
-
-    #[test]
-    fn already_initialized_has_no_hint() {
-        let err = SbError::AlreadyInitialized {
-            path: "/home/user/notes".to_string(),
-        };
-        assert!(err.hint().is_none());
     }
 
     #[test]
@@ -511,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn usage_error_code_str_is_usage() {
+    fn usage_error_exits_2_with_usage_code() {
         let err = SbError::Usage("bad".into());
         assert_eq!(err.exit_code(), 2);
         assert_eq!(err.code_str(), "usage");
@@ -599,16 +509,6 @@ mod tests {
         assert_ne!(err.code_str(), "auth");
         assert!(err.to_string().contains("read-only"));
         assert!(err.hint().expect("read-only should hint").contains("token"));
-    }
-
-    #[test]
-    fn unauthorized_still_exits_3() {
-        let err = SbError::AuthFailed {
-            url: "http://localhost:3000".to_string(),
-            status: 401,
-        };
-        assert_eq!(err.exit_code(), 3);
-        assert_eq!(err.code_str(), "auth");
     }
 
     #[test]

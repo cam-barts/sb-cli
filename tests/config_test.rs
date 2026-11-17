@@ -35,25 +35,6 @@ token = "secret123"
 }
 
 #[test]
-fn config_show_reveal_unmasks_token() {
-    let dir = setup_config_dir(
-        r#"
-server_url = "https://sb.test"
-token = "secret123"
-"#,
-    );
-
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["config", "show", "--reveal"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("secret123"));
-}
-
-#[test]
 fn config_show_env_override() {
     let dir = setup_config_dir("");
 

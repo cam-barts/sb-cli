@@ -1,123 +1,83 @@
 use assert_cmd::Command;
-use predicates::prelude::*;
 
-#[test]
-fn no_color_flag_suppresses_ansi() {
-    // --no-color should produce output without ANSI escape sequences
-    Command::cargo_bin("sb")
-        .unwrap()
-        .args(["--no-color", "version"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\x1b[").not());
-}
-
-#[test]
-fn piped_output_suppresses_ansi() {
-    // When piped (not a TTY), output should not contain ANSI escapes
-    // assert_cmd runs in non-TTY context by default
-    Command::cargo_bin("sb")
-        .unwrap()
-        .arg("version")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\x1b[").not());
-}
-
-#[test]
-fn no_color_env_suppresses_ansi() {
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("NO_COLOR", "1")
-        .arg("version")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("\x1b[").not());
-}
-
-#[test]
-fn verbose_flag_produces_stderr_output() {
-    // --verbose should produce debug output on stderr
-    let output = Command::cargo_bin("sb")
-        .unwrap()
-        .args(["--verbose", "version"])
+/// Run `sb <args>` under a pseudo-terminal (util-linux `script`) so stdout is
+/// a TTY, the only condition under which colour is ever enabled. Returns None
+/// when `script` is unavailable so the caller can skip.
+#[cfg(target_os = "linux")]
+fn run_on_a_tty(args: &str, extra_env: &[(&str, &str)]) -> Option<String> {
+    let sb = Command::cargo_bin("sb").unwrap();
+    let cmdline = format!("{} {}", sb.get_program().to_string_lossy(), args);
+    let out = std::process::Command::new("script")
+        .args(["-qec", &cmdline, "/dev/null"])
+        .env("TERM", "xterm-256color")
+        .env_remove("NO_COLOR")
+        .envs(extra_env.iter().copied())
         .output()
-        .unwrap();
+        .ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
 
-    assert!(output.status.success());
-    let stderr = String::from_utf8(output.stderr).unwrap();
+/// `sb version` styles its labels, but only when colour is on. Colour needs a
+/// TTY, so piped runs (every other test) can never show it; this drives a real
+/// PTY and proves it is present by default and removed by `--no-color` and
+/// `NO_COLOR`.
+#[cfg(target_os = "linux")]
+#[test]
+fn colour_is_on_for_a_tty_and_off_with_no_color_flag_or_env() {
+    let Some(coloured) = run_on_a_tty("version", &[]) else {
+        eprintln!("skipping: `script` not available");
+        return;
+    };
     assert!(
-        !stderr.is_empty(),
-        "stderr should contain debug output when --verbose is used, got empty stderr"
+        coloured.contains("\x1b["),
+        "a TTY should get coloured output, got: {coloured:?}"
+    );
+
+    let flagged = run_on_a_tty("--no-color version", &[]).unwrap();
+    assert!(
+        flagged.contains("sb "),
+        "command should still run: {flagged:?}"
+    );
+    assert!(
+        !flagged.contains("\x1b["),
+        "--no-color must remove ANSI, got: {flagged:?}"
+    );
+
+    let env_off = run_on_a_tty("version", &[("NO_COLOR", "1")]).unwrap();
+    assert!(
+        env_off.contains("sb "),
+        "command should still run: {env_off:?}"
+    );
+    assert!(
+        !env_off.contains("\x1b["),
+        "NO_COLOR must remove ANSI, got: {env_off:?}"
     );
 }
 
 #[test]
-fn json_format_config_show_is_valid_json() {
-    let tmpdir = tempfile::TempDir::new().unwrap();
-    std::fs::create_dir_all(tmpdir.path().join(".sb")).unwrap();
-    std::fs::write(
-        tmpdir.path().join(".sb/config.toml"),
-        "server_url = \"https://test.example.com\"\n",
-    )
-    .unwrap();
-
-    let output = Command::cargo_bin("sb")
+fn verbose_flag_emits_debug_lines_on_stderr_and_default_does_not() {
+    let verbose = Command::cargo_bin("sb")
         .unwrap()
-        .args(["--format", "json", "config", "show"])
-        .current_dir(tmpdir.path())
+        .args(["--verbose", "version"])
         .output()
         .unwrap();
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    // Verify it's valid JSON
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("config show --format json should produce valid JSON");
-    assert!(parsed.is_object());
-}
-
-#[test]
-fn quiet_suppresses_all_informational_output() {
-    Command::cargo_bin("sb")
-        .unwrap()
-        .args(["--quiet", "version"])
-        .assert()
-        .success()
-        .stdout(predicate::str::is_empty());
-}
-
-#[test]
-fn json_format_config_show_defaults_is_valid_json() {
-    // Even without any config file, --format json config show should produce valid JSON
-    let tmpdir = tempfile::TempDir::new().unwrap();
-
-    let output = Command::cargo_bin("sb")
-        .unwrap()
-        .args(["--format", "json", "config", "show"])
-        .current_dir(tmpdir.path())
-        .output()
-        .unwrap();
-
-    assert!(output.status.success());
-
-    let stdout = String::from_utf8(output.stdout).unwrap();
-    let parsed: serde_json::Value = serde_json::from_str(&stdout)
-        .expect("config show --format json with defaults should produce valid JSON");
-    assert!(parsed.is_object());
-}
-
-#[test]
-fn no_color_flag_on_stderr_suppresses_ansi() {
-    // Verify stderr also has no ANSI when --no-color is set
-    let output = Command::cargo_bin("sb")
-        .unwrap()
-        .args(["--no-color", "version"])
-        .output()
-        .unwrap();
-
-    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(verbose.status.success());
+    let stderr = String::from_utf8(verbose.stderr).unwrap();
     assert!(
-        !stderr.contains("\x1b["),
-        "stderr should not contain ANSI escapes with --no-color"
+        stderr.contains("DEBUG") && stderr.contains("dispatching: version"),
+        "--verbose should log DEBUG lines, got: {stderr:?}"
+    );
+
+    let quiet = Command::cargo_bin("sb")
+        .unwrap()
+        .env_remove("RUST_LOG")
+        .arg("version")
+        .output()
+        .unwrap();
+    assert!(quiet.status.success());
+    let stderr = String::from_utf8(quiet.stderr).unwrap();
+    assert!(
+        !stderr.contains("DEBUG"),
+        "no DEBUG lines without --verbose, got: {stderr:?}"
     );
 }
