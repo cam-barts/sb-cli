@@ -56,8 +56,7 @@ pub async fn pull(
     })??;
 
     // 3. Build HashMaps for O(1) lookup
-    let state_map: HashMap<String, SyncStateRow> =
-        rows.into_iter().map(|r| (r.path.clone(), r)).collect();
+    let state_map: HashMap<String, SyncStateRow> = filter.tracked(rows);
 
     // 4. Build HashSet of server file names (for deletion detection)
     let server_set: HashSet<String> = server_files.iter().map(|m| m.name.clone()).collect();
@@ -277,8 +276,7 @@ pub async fn plan_pull(
     })??;
 
     // 3. Build HashMaps for O(1) lookup
-    let state_map: HashMap<String, SyncStateRow> =
-        rows.into_iter().map(|r| (r.path.clone(), r)).collect();
+    let state_map: HashMap<String, SyncStateRow> = filter.tracked(rows);
 
     // 4. Build HashSet of server file names (for deletion detection)
     let server_set: HashSet<String> = server_files.iter().map(|m| m.name.clone()).collect();
@@ -1648,6 +1646,74 @@ mod tests {
             SyncStatus::Synced,
             "the row must leave 'readonly', or the file never updates again"
         );
+    }
+
+    /// Seed a clean synced row for a file that exists locally with `content`.
+    fn seed_synced(dir: &Path, db_path: &Path, rel: &str, content: &[u8]) -> PathBuf {
+        let file = dir.join(rel);
+        fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        fs::write(&file, content).expect("write");
+        let hash = hash_file(&file).expect("hash");
+        let mut db = StateDb::open(db_path).expect("open db");
+        db.commit_batch(&[SyncResult::Synced {
+            path: rel.to_string(),
+            local_hash: hash.clone(),
+            remote_hash: hash,
+            remote_etag: None,
+            remote_mtime: 1700000000000,
+            local_mtime: 0,
+        }])
+        .expect("commit");
+        file
+    }
+
+    // SilverBullet never lists dot-prefixed paths, so a tracked dotfile is
+    // always "absent from the server". That is not a server-side delete.
+    #[tokio::test]
+    async fn pull_never_deletes_a_tracked_dotfile_the_server_does_not_list() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        let file = seed_synced(dir.path(), &db_path, "notes/.draft.md", b"draft");
+
+        let server = MockServer::start().await;
+        mock_listing(&server, serde_json::json!([])).await;
+
+        let result = pull(
+            &make_client(&server.uri()),
+            dir.path(),
+            &dir.path().join(".sb"),
+            &db_path,
+            &make_filter(),
+            4,
+            false,
+        )
+        .await
+        .expect("pull");
+
+        assert_eq!(result.deleted, 0);
+        assert!(file.exists(), "tracked dotfile must survive a pull");
+    }
+
+    #[tokio::test]
+    async fn plan_pull_never_plans_to_delete_a_tracked_dotfile() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        seed_synced(dir.path(), &db_path, "notes/.draft.md", b"draft");
+
+        let server = MockServer::start().await;
+        mock_listing(&server, serde_json::json!([])).await;
+
+        let actions = plan_pull(
+            &make_client(&server.uri()),
+            dir.path(),
+            &dir.path().join(".sb"),
+            &db_path,
+            &make_filter(),
+        )
+        .await
+        .expect("plan_pull");
+
+        assert!(actions.is_empty(), "nothing to do: {actions:?}");
     }
 
     #[tokio::test]
