@@ -218,7 +218,9 @@ async fn sync_status_counts_new_modified_and_deleted_files() {
         .stdout(predicate::str::is_match(r"(?m)^Modified\s+1$").unwrap())
         .stdout(predicate::str::is_match(r"(?m)^New\s+1$").unwrap())
         .stdout(predicate::str::is_match(r"(?m)^Deleted\s+1$").unwrap())
-        .stdout(predicate::str::contains("Last sync: never"));
+        .stdout(predicate::str::contains("Last sync: never"))
+        // No marker files here, so the marker hint must stay silent.
+        .stderr(predicate::str::contains("conflict markers").not());
 }
 
 /// Dry-run output contract: empty plan renders per format, a non-empty human
@@ -982,6 +984,12 @@ fn resolve_all_keep_remote_resolves_every_conflict() {
         .exists());
     // Nested stash dir is pruned once it is empty.
     assert!(!space.join(".sb").join("conflicts").join("Journal").exists());
+    // The stored hash must be the new on-disk content's, or the next push
+    // misjudges the file as modified (or worse, unchanged).
+    assert_eq!(
+        row_field(&space.join(".sb/state.db"), "Doc.md", "local_hash"),
+        Some(sb_cli::sync::scanner::hash_bytes(b"remote doc\n"))
+    );
 }
 
 /// `--all --keep-local` uploads each local file to the server and leaves the
@@ -1027,6 +1035,10 @@ async fn resolve_all_keep_local_uploads_every_file() {
     assert_eq!(
         std::fs::read_to_string(space.join("space").join("Doc.md")).unwrap(),
         "local doc\n"
+    );
+    assert_eq!(
+        row_field(&space.join(".sb/state.db"), "Doc.md", "local_hash"),
+        Some(sb_cli::sync::scanner::hash_bytes(b"local doc\n"))
     );
     assert_eq!(status_of(&space, "Doc.md").as_deref(), Some("synced"));
     assert_eq!(

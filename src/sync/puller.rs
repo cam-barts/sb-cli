@@ -771,6 +771,57 @@ mod tests {
         );
     }
 
+    /// More files than workers: the pool must drain every file, not drop or
+    /// deadlock on the ones beyond the worker count.
+    #[tokio::test]
+    async fn pull_downloads_every_file_when_files_outnumber_workers() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        StateDb::open(&db_path).expect("open db");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                make_file_meta("page1.md", 1700000001000i64),
+                make_file_meta("page2.md", 1700000002000i64),
+                make_file_meta("page3.md", 1700000003000i64),
+            ])))
+            .mount(&server)
+            .await;
+        for page in ["page1.md", "page2.md", "page3.md"] {
+            Mock::given(method("GET"))
+                .and(wm_path(format!("/.fs/{page}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(format!("content of {page}")),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let client = make_client(&server.uri());
+        let sb_dir = dir.path().join(".sb");
+        let result = pull(
+            &client,
+            dir.path(),
+            &sb_dir,
+            &db_path,
+            &make_filter(),
+            1,
+            false,
+        )
+        .await
+        .expect("pull should succeed");
+
+        assert_eq!(result.downloaded, 3);
+        for page in ["page1.md", "page2.md", "page3.md"] {
+            assert_eq!(
+                fs::read_to_string(dir.path().join(page)).expect("downloaded"),
+                format!("content of {page}")
+            );
+        }
+    }
+
     // Test: pull downloads a changed remote file (lastModified > remote_mtime) when local is unmodified
     #[tokio::test]
     async fn pull_downloads_changed_remote_file_when_local_unmodified() {

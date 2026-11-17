@@ -846,6 +846,61 @@ mod tests {
         }
     }
 
+    /// More files than workers: the pool must drain every file, not drop or
+    /// deadlock on the ones beyond the worker count.
+    #[tokio::test]
+    async fn push_uploads_every_file_when_files_outnumber_workers() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_space(dir.path());
+        StateDb::open(&db_path).expect("open db");
+        for i in 1..=3 {
+            fs::write(
+                dir.path().join(format!("page{i}.md")),
+                format!("content {i}"),
+            )
+            .expect("write file");
+        }
+
+        let server = MockServer::start().await;
+        for i in 1..=3 {
+            Mock::given(method("PUT"))
+                .and(wm_path(format!("/.fs/page{i}.md")))
+                .respond_with(ResponseTemplate::new(200))
+                .expect(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(wm_path(format!("/.fs/page{i}.md")))
+                .and(wm_header("X-Get-Meta", "true"))
+                .respond_with(
+                    ResponseTemplate::new(200).insert_header("X-Last-Modified", "1700000001000"),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let client = make_client(&server.uri());
+        let sb_dir = dir.path().join(".sb");
+        let result = push(
+            &client,
+            dir.path(),
+            &sb_dir,
+            &db_path,
+            &make_filter(),
+            1,
+            false,
+        )
+        .await
+        .expect("push should succeed");
+
+        assert!(
+            result.failures.is_empty(),
+            "failures: {:?}",
+            result.failures
+        );
+        assert_eq!(result.uploaded, 3);
+    }
+
     // Test: a server mtime bump over content identical to ours is not a conflict.
     // The server touching a file it re-indexed is enough to trigger this, and each
     // such push used to leave another byte-identical stash behind.
