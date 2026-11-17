@@ -22,8 +22,7 @@ pub static SB_SPACE_MUTEX: Mutex<()> = Mutex::new(());
 ///   real `~/.config/sb/config.toml` doesn't leak into ResolvedConfig
 /// - holds the cross-test mutex
 ///
-/// Restores both env vars on drop. Tests that want to exercise XDG content
-/// should pair this with `XdgGuard` (which is applied AFTER this one, so it wins).
+/// Restores both env vars on drop.
 pub struct SbSpaceGuard {
     _lock: MutexGuard<'static, ()>,
     _xdg_tmp: tempfile::TempDir,
@@ -86,30 +85,6 @@ impl CwdGuard {
 impl Drop for CwdGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.prev);
-    }
-}
-
-/// Override XDG_CONFIG_HOME to a tempdir-local path so user-config writes don't
-/// touch the real ~/.config/sb/. Restores on drop. Does NOT take the mutex
-/// (compose with other guards as needed).
-pub struct XdgGuard {
-    prev: Option<String>,
-}
-
-impl XdgGuard {
-    pub fn set(path: &std::path::Path) -> Self {
-        let prev = std::env::var("XDG_CONFIG_HOME").ok();
-        std::env::set_var("XDG_CONFIG_HOME", path);
-        Self { prev }
-    }
-}
-
-impl Drop for XdgGuard {
-    fn drop(&mut self) {
-        match &self.prev {
-            Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
-            None => std::env::remove_var("XDG_CONFIG_HOME"),
-        }
     }
 }
 
