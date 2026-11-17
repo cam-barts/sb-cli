@@ -1,3 +1,9 @@
+## v1.11.1 (2026-11-17)
+
+### Fix
+
+- **client**: report a down runtime at once for logs and screenshot
+
 ## v1.11.0 (2026-11-17)
 
 ### Feat
