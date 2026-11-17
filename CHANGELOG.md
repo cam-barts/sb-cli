@@ -1,5 +1,10 @@
 ## v1.9.2 (2026-11-17)
 
+### Feat
+
+- **man**: generate man pages with clap_mangen (`sb man`, `sb man --install`) (#11)
+- **config**: `[template]` section with `dir` and `default` (#11)
+
 ### Fix
 
 - **release**: publish sha256sums.txt with bare filenames (#11)
