@@ -771,6 +771,57 @@ mod tests {
         );
     }
 
+    /// More files than workers: the pool must drain every file, not drop or
+    /// deadlock on the ones beyond the worker count.
+    #[tokio::test]
+    async fn pull_downloads_every_file_when_files_outnumber_workers() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_db(dir.path());
+        StateDb::open(&db_path).expect("open db");
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(wm_path("/.fs"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                make_file_meta("page1.md", 1700000001000i64),
+                make_file_meta("page2.md", 1700000002000i64),
+                make_file_meta("page3.md", 1700000003000i64),
+            ])))
+            .mount(&server)
+            .await;
+        for page in ["page1.md", "page2.md", "page3.md"] {
+            Mock::given(method("GET"))
+                .and(wm_path(format!("/.fs/{page}")))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(format!("content of {page}")),
+                )
+                .mount(&server)
+                .await;
+        }
+
+        let client = make_client(&server.uri());
+        let sb_dir = dir.path().join(".sb");
+        let result = pull(
+            &client,
+            dir.path(),
+            &sb_dir,
+            &db_path,
+            &make_filter(),
+            1,
+            false,
+        )
+        .await
+        .expect("pull should succeed");
+
+        assert_eq!(result.downloaded, 3);
+        for page in ["page1.md", "page2.md", "page3.md"] {
+            assert_eq!(
+                fs::read_to_string(dir.path().join(page)).expect("downloaded"),
+                format!("content of {page}")
+            );
+        }
+    }
+
     // Test: pull downloads a changed remote file (lastModified > remote_mtime) when local is unmodified
     #[tokio::test]
     async fn pull_downloads_changed_remote_file_when_local_unmodified() {
@@ -829,72 +880,6 @@ mod tests {
 
         let content = fs::read_to_string(&file_path).expect("read file");
         assert_eq!(content, "updated content", "file should be updated");
-    }
-
-    // Test: pull skips download and marks conflict when remote changed AND local also modified
-    #[tokio::test]
-    async fn pull_marks_conflict_when_both_local_and_remote_modified() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_db(dir.path());
-
-        let original_hash = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233";
-
-        // Write locally-modified content (different from stored hash)
-        let file_path = dir.path().join("page.md");
-        fs::write(&file_path, b"local modification").expect("write file");
-
-        // Pre-populate state.db with stored hash matching original (not local modified)
-        {
-            let mut db = StateDb::open(&db_path).expect("open db");
-            db.commit_batch(&[SyncResult::Synced {
-                path: "page.md".to_string(),
-                local_hash: original_hash.to_string(),
-                remote_hash: original_hash.to_string(),
-                remote_etag: None,
-                remote_mtime: 1700000000000,
-                local_mtime: 0,
-            }])
-            .expect("commit");
-        }
-
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(
-                serde_json::json!([make_file_meta("page.md", 1700000001000i64)]), // remote newer
-            ))
-            .mount(&server)
-            .await;
-        // Conflict: also mock get_file for stashing
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs/page.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("remote updated content"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let sb_dir = dir.path().join(".sb");
-        let result = pull(
-            &client,
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            4,
-            false,
-        )
-        .await
-        .expect("pull should succeed");
-
-        assert_eq!(result.conflicts, 1, "should detect 1 conflict");
-        assert_eq!(result.downloaded, 0, "should not download on conflict");
-
-        // Local file should be preserved (not overwritten)
-        let content = fs::read_to_string(&file_path).expect("read file");
-        assert_eq!(
-            content, "local modification",
-            "local file should be preserved"
-        );
     }
 
     // Test: a stale state.db baseline over content both sides agree on is not a
@@ -1027,6 +1012,12 @@ mod tests {
         .expect("pull should succeed");
 
         assert_eq!(result.conflicts, 1);
+        assert_eq!(result.downloaded, 0, "should not download on conflict");
+        assert_eq!(
+            fs::read_to_string(&file_path).expect("read local"),
+            "local modification",
+            "local file should be preserved"
+        );
 
         // Verify conflict stash was created under .sb/conflicts/
         let conflicts_dir = dir.path().join(".sb/conflicts");
@@ -1208,48 +1199,18 @@ mod tests {
         assert_eq!(result.downloaded, 0, "should not download unchanged file");
         assert_eq!(result.conflicts, 0);
         assert_eq!(result.deleted, 0);
-    }
-
-    // Test: pull returns Vec of SyncResult entries for batch commit
-    #[tokio::test]
-    async fn pull_returns_sync_results_for_batch_commit() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_db(dir.path());
-        StateDb::open(&db_path).expect("open db");
-
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                make_file_meta("page1.md", 1700000000000i64)
-            ])))
-            .mount(&server)
-            .await;
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs/page1.md"))
-            .respond_with(ResponseTemplate::new(200).set_body_string("content"))
-            .mount(&server)
-            .await;
-
-        let client = make_client(&server.uri());
-        let sb_dir = dir.path().join(".sb");
-        let result = pull(
-            &client,
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            4,
-            false,
-        )
-        .await
-        .expect("pull should succeed");
-
-        assert_eq!(result.results.len(), 1, "should have 1 SyncResult");
-        match &result.results[0] {
-            SyncResult::Synced { path, .. } => assert_eq!(path, "page1.md"),
-            other => panic!("expected Synced result, got: {other:?}"),
-        }
+        assert_eq!(
+            fs::read_to_string(&file_path).expect("read"),
+            "current content"
+        );
+        let gets: Vec<_> = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| r.url.path().to_string())
+            .collect();
+        assert_eq!(gets, vec!["/.fs"], "only the listing may be fetched");
     }
 
     // Test: pull validates server-returned file names (rejects path traversal)
@@ -1349,58 +1310,6 @@ mod tests {
         );
     }
 
-    // Test: pull uses concurrent workers (Semaphore limits simultaneous downloads)
-    #[tokio::test]
-    async fn pull_uses_concurrent_workers_with_semaphore() {
-        let dir = TempDir::new().expect("tempdir");
-        let db_path = setup_db(dir.path());
-        StateDb::open(&db_path).expect("open db");
-
-        // Create 3 files to download
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(wm_path("/.fs"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
-                make_file_meta("page1.md", 1700000001000i64),
-                make_file_meta("page2.md", 1700000002000i64),
-                make_file_meta("page3.md", 1700000003000i64),
-            ])))
-            .mount(&server)
-            .await;
-        for page in &["page1.md", "page2.md", "page3.md"] {
-            Mock::given(method("GET"))
-                .and(wm_path(format!("/.fs/{page}")))
-                .respond_with(
-                    ResponseTemplate::new(200).set_body_string(format!("content of {page}")),
-                )
-                .mount(&server)
-                .await;
-        }
-
-        let client = make_client(&server.uri());
-        let sb_dir = dir.path().join(".sb");
-        // Use workers=2 to limit concurrency
-        let result = pull(
-            &client,
-            dir.path(),
-            &sb_dir,
-            &db_path,
-            &make_filter(),
-            2,
-            false,
-        )
-        .await
-        .expect("pull should succeed");
-
-        assert_eq!(result.downloaded, 3, "all 3 files should be downloaded");
-        for page in &["page1.md", "page2.md", "page3.md"] {
-            assert!(
-                dir.path().join(page).exists(),
-                "{page} should exist after pull"
-            );
-        }
-    }
-
     // ------------------------------------------------------------------
     // ETag capture on pull
     // ------------------------------------------------------------------
@@ -1458,10 +1367,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pull_stores_no_etag_when_the_server_sends_none() {
+    async fn pull_clears_a_stored_etag_when_the_server_sends_none() {
         let dir = TempDir::new().expect("tempdir");
         let db_path = setup_db(dir.path());
-        StateDb::open(&db_path).expect("open db");
+        // Seed a synced row WITH an etag and an untouched local file, so the
+        // newer remote copy is downloaded over it. The column defaults to NULL,
+        // so only a pull that actively writes NULL can clear it.
+        let file = dir.path().join("page.md");
+        fs::write(&file, b"old content").expect("write");
+        let old_hash = hash_file(&file).expect("hash");
+        StateDb::open(&db_path)
+            .expect("open db")
+            .upsert_row(&SyncStateRow {
+                path: "page.md".into(),
+                local_hash: Some(old_hash.clone()),
+                remote_hash: Some(old_hash),
+                remote_etag: Some("\"sha256:stale\"".into()),
+                remote_mtime: 1600000000000,
+                local_mtime: 0,
+                status: SyncStatus::Synced,
+                conflict_at: 0,
+            })
+            .expect("seed");
 
         let server = MockServer::start().await;
         Mock::given(method("GET"))
@@ -1478,6 +1405,7 @@ mod tests {
             .await;
 
         let mut result = pull_one(dir.path(), &db_path, &server).await;
+        assert_eq!(result.downloaded, 1, "the row must actually be refreshed");
         let mut db = StateDb::open(&db_path).expect("open db");
         db.commit_batch(&std::mem::take(&mut result.results))
             .expect("commit");
@@ -1486,7 +1414,8 @@ mod tests {
                 .expect("get")
                 .expect("exists")
                 .remote_etag,
-            None
+            None,
+            "a stale etag must not survive a download that carried none"
         );
     }
 
