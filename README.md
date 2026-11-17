@@ -9,6 +9,20 @@ A CLI for [SilverBullet](https://silverbullet.md), the self-hosted Markdown note
 
 Work with your SilverBullet notes from the terminal. Pages live on your local filesystem and sync to your server when you tell them to. One binary, no runtime dependencies.
 
+> [!NOTE]
+> **This is not the official SilverBullet CLI.** SilverBullet ships its own `sb`
+> ([docs](https://docs.silverbullet.md/CLI), [releases](https://github.com/silverbulletmd/silverbullet/releases)),
+> maintained upstream. When SilverBullet's docs say `sb …`, they mean that one.
+> This project is an independent community CLI that happens to share the name.
+>
+> Both install a binary called `sb`, and some subcommands share names (`lua`,
+> `query`, `screenshot`, `logs`, `upgrade`) but take different flags. Their
+> config doesn't collide (upstream uses `~/.config/silverbullet`, this uses
+> `~/.config/sb`). The binaries do: upstream's installer writes
+> `~/.local/bin/sb` and will replace this one if it lives there. To keep both,
+> install them in different directories and rename one, e.g.
+> `mv ~/.local/bin/sb ~/.local/bin/sb-official`.
+
 ## Features
 
 - Page operations are local-first; sync is explicit
