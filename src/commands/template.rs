@@ -1395,7 +1395,7 @@ mod tests {
             // and the fallback would yield the unrendered text instead.
             Mock::given(method("POST"))
                 .and(path("/.runtime/lua_script"))
-                .and(body_string_contains("template.new"))
+                .and(body_string_contains("template.new("))
                 .and(body_string_contains("# ${x}"))
                 .respond_with(
                     ResponseTemplate::new(200).set_body_string(r##"{"result":"# Rendered"}"##),

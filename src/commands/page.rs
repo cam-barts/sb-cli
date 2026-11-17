@@ -969,7 +969,15 @@ mod tests {
 
         #[test]
         fn append_signature_on_non_list_blocks_breaks_into_a_new_block() {
-            for content in ["# Status update", "> quoted wisdom", "| a | b |"] {
+            // `-- @ada` and `**bold**` start with a list marker character but
+            // no following space, so they are prose, not list items.
+            for content in [
+                "# Status update",
+                "> quoted wisdom",
+                "| a | b |",
+                "-- @zef",
+                "**bold** line",
+            ] {
                 assert_eq!(
                     append_signature(content, &["ada".into()]),
                     format!("{content}\n\n-- @ada\n"),

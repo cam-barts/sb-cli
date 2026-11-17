@@ -38,7 +38,10 @@ fn write_page(dir: &TempDir, name: &str, content: &str) {
 fn sb_cmd(dir: &TempDir) -> Command {
     let mut cmd = Command::cargo_bin("sb").expect("sb binary");
     cmd.current_dir(dir.path())
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // SB_SPACE outranks cwd in find_space_root; a dev shell exporting it
+        // would aim these tests (delete --force, move) at a real space.
+        .env_remove("SB_SPACE");
     cmd
 }
 
@@ -249,9 +252,9 @@ fn page_list_sort_modified_puts_newest_first() {
 }
 
 #[test]
-fn page_list_sort_created_lists_every_page() {
-    // Birth time can't be set portably, so only the contract that the sort
-    // mode works (including the modified-time fallback) is asserted.
+fn page_list_sort_created_is_accepted_and_drops_no_pages() {
+    // Birth time can't be set portably, so this does NOT check ordering, only
+    // that the created-sort path runs and returns every page.
     let dir = setup_space();
     write_page(&dir, "one", "x");
     write_page(&dir, "two", "y");
@@ -788,7 +791,8 @@ fn page_command_rejects_absolute_out_of_space_sync_dir() {
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["page", "list"])
         .assert()
-        .failure()
+        // A Config error: `general`, exit 1.
+        .code(1)
         .stderr(predicate::str::contains("outside the space"));
 }
 
