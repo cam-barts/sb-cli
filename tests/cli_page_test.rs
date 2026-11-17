@@ -398,6 +398,67 @@ fn page_create_with_content_flag_creates_file() {
     assert_eq!(content, "hello world");
 }
 
+const MEETING_TEMPLATE: &str = "---\ntags: meta/template/page\nfrontmatter: |\n  tags: meeting\n---\n# Meeting\n\n|^|\n\n## Actions\n";
+
+#[test]
+fn page_create_from_template_writes_instantiated_content() {
+    let dir = setup_space();
+    write_page(&dir, "Templates/Meeting", MEETING_TEMPLATE);
+
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "create",
+            "standup",
+            "--template",
+            "Templates/Meeting",
+        ])
+        .assert()
+        .success();
+
+    let page = std::fs::read_to_string(dir.path().join("standup.md")).expect("page written");
+    assert_eq!(
+        page,
+        "---\ntags: meeting\n---\n\n# Meeting\n\n\n\n## Actions\n"
+    );
+}
+
+#[test]
+fn page_create_template_wins_over_piped_stdin_and_splices_it_at_cursor() {
+    let dir = setup_space();
+    write_page(&dir, "Templates/Meeting", MEETING_TEMPLATE);
+
+    sb_cmd(&dir)
+        .args([
+            "page",
+            "create",
+            "standup",
+            "--template",
+            "Templates/Meeting",
+        ])
+        .write_stdin("piped note\n")
+        .assert()
+        .success();
+
+    let page = std::fs::read_to_string(dir.path().join("standup.md")).expect("page written");
+    assert_eq!(
+        page,
+        "---\ntags: meeting\n---\n\n# Meeting\n\npiped note\n\n## Actions\n"
+    );
+}
+
+#[test]
+fn page_create_unknown_template_is_not_found_and_writes_nothing() {
+    let dir = setup_space();
+
+    sb_cmd(&dir)
+        .args(["page", "create", "standup", "--template", "Templates/Nope"])
+        .assert()
+        .failure()
+        .code(4);
+    assert!(!dir.path().join("standup.md").exists());
+}
+
 #[test]
 fn page_create_duplicate_fails_with_error() {
     let dir = setup_space();

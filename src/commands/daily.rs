@@ -1571,6 +1571,58 @@ dateFormat = "%Y-%m-%d"
         assert_eq!(got[2].body, "earliest");
     }
 
+    /// Seed one daily file per day for today-3..=today with the body `day-N`
+    /// (N = days back). Midnight caveat: the production code reads the wall
+    /// clock itself, so a run straddling local midnight can see a shifted
+    /// "today" (same limitation as the other daily tests).
+    fn seed_last_days(space_root: &std::path::Path) {
+        use jiff::ToSpan;
+        let today = jiff::Zoned::now().date();
+        for back in 0..=3i32 {
+            let d = today.checked_add((-back).days()).unwrap();
+            seed_journal(
+                space_root,
+                &format!("{}.md", d.strftime("%Y-%m-%d")),
+                &format!("* [time:: 09:00] day-{back}\n"),
+            );
+        }
+    }
+
+    #[test]
+    fn collect_entries_yesterday_reads_only_yesterdays_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
+        let config = minimal_config(tmp.path());
+        seed_last_days(tmp.path());
+
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.yesterday = true;
+        let got = collect_entries(tmp.path(), &config, &args).unwrap();
+        let bodies: Vec<&str> = got.iter().map(|e| e.body.as_str()).collect();
+        assert_eq!(bodies, vec!["day-1"]);
+    }
+
+    #[test]
+    fn collect_entries_negative_offset_reads_that_days_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
+        let config = minimal_config(tmp.path());
+        seed_last_days(tmp.path());
+
+        let fmt = OutputFormat::Json;
+        let mut args = default_args(&fmt);
+        args.offset = Some(-3);
+        let got = collect_entries(tmp.path(), &config, &args).unwrap();
+        let bodies: Vec<&str> = got.iter().map(|e| e.body.as_str()).collect();
+        assert_eq!(bodies, vec!["day-3"]);
+
+        args.offset = Some(0);
+        let got = collect_entries(tmp.path(), &config, &args).unwrap();
+        let bodies: Vec<&str> = got.iter().map(|e| e.body.as_str()).collect();
+        assert_eq!(bodies, vec!["day-0"]);
+    }
+
     #[test]
     fn collect_entries_applies_limit() {
         let tmp = tempfile::tempdir().unwrap();
