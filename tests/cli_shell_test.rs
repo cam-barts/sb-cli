@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::fs;
@@ -25,7 +26,7 @@ async fn shell_disabled_prints_warning() {
     // Config has shell.enabled = false (default — no [shell] section)
     let dir = setup_space("http://localhost:19999", false);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "ls"])
@@ -50,7 +51,7 @@ async fn shell_enabled_sends_post_and_prints_stdout() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "echo", "hello world"])
@@ -70,7 +71,7 @@ async fn shell_with_a_rejected_token_exits_auth() {
         .await;
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "ls"])
@@ -93,7 +94,7 @@ async fn shell_enabled_prints_stderr() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "badcmd"])
@@ -107,7 +108,7 @@ async fn shell_enabled_prints_stderr() {
 async fn shell_no_command_returns_usage_error() {
     let dir = setup_space("http://localhost:19999", true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell"])
@@ -134,7 +135,7 @@ async fn shell_sends_correct_json_body() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "ls", "-la", "/tmp"])
@@ -161,7 +162,7 @@ async fn shell_propagates_exit_code() {
 
     let dir = setup_space(&server.uri(), true);
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["shell", "failing-cmd"])

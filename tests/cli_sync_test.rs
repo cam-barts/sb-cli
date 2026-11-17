@@ -2,6 +2,8 @@
 ///
 /// Uses assert_cmd to run the real binary and assert on exit code, stdout, stderr.
 /// Uses wiremock for HTTP mocking and tempfile for isolated space directories.
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use rusqlite::{Connection, OptionalExtension};
@@ -60,18 +62,10 @@ fn sb_in(space: &std::path::Path) -> Command {
     cmd
 }
 
-/// The binary with XDG pinned and every `SB_*` variable stripped. SB_SPACE
-/// outranks cwd and SB_SERVER_URL / SB_TOKEN outrank the space's config, so a
-/// dev shell exporting any of them would aim these tests (push, resolve
-/// --keep-remote) at real data.
+/// The binary (SB_* already stripped by `common::sb`) with XDG pinned.
 fn sb_bin() -> Command {
-    let mut cmd = Command::cargo_bin("sb").expect("sb binary");
+    let mut cmd = common::sb().expect("sb binary");
     cmd.env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
-    for (key, _) in std::env::vars_os() {
-        if key.to_string_lossy().starts_with("SB_") {
-            cmd.env_remove(key);
-        }
-    }
     cmd
 }
 

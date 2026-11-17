@@ -1,5 +1,7 @@
 /// Integration tests for `sb search`, against a wiremock stand-in for the
 /// server's `/.search/query` endpoint.
+mod common;
+
 use assert_cmd::Command;
 use predicates::prelude::*;
 use serde_json::json;
@@ -19,7 +21,7 @@ fn setup_space(server_url: &str) -> tempfile::TempDir {
 }
 
 fn sb_in(dir: &std::path::Path) -> Command {
-    let mut cmd = Command::cargo_bin("sb").unwrap();
+    let mut cmd = common::sb().unwrap();
     cmd.current_dir(dir)
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
     cmd

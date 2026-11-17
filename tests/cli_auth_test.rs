@@ -1,4 +1,5 @@
-use assert_cmd::Command;
+mod common;
+
 use predicates::prelude::*;
 use rusqlite::Connection;
 use std::path::Path;
@@ -18,7 +19,7 @@ async fn auth_set_with_flag_updates_config() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     setup_initialized_space(temp_dir.path(), "http://example.com", "oldtoken");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["auth", "set", "--token", "newtoken"])
@@ -47,7 +48,7 @@ async fn auth_set_piped_stdin() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     setup_initialized_space(temp_dir.path(), "http://example.com", "oldtoken");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["auth", "set"])
@@ -73,13 +74,12 @@ async fn auth_set_uninitialized_fails() {
     let temp_dir = tempfile::TempDir::new().expect("create tempdir");
     let xdg_dir = tempfile::TempDir::new().expect("create xdg tempdir");
 
-    Command::cargo_bin("sb")
+    common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
         .args(["auth", "set", "--token", "t"])
         .current_dir(temp_dir.path())
         .env("XDG_CONFIG_HOME", xdg_dir.path())
-        .env_remove("SB_SPACE")
         .assert()
         .failure()
         .code(4) // NotInitialized -> not-found category (exit-code taxonomy)

@@ -1,11 +1,11 @@
-use assert_cmd::Command;
+mod common;
 
 /// Run `sb <args>` under a pseudo-terminal (util-linux `script`) so stdout is
 /// a TTY, the only condition under which colour is ever enabled. Returns None
 /// when `script` is unavailable so the caller can skip.
 #[cfg(target_os = "linux")]
 fn run_on_a_tty(args: &str, extra_env: &[(&str, &str)]) -> Option<String> {
-    let sb = Command::cargo_bin("sb").unwrap();
+    let sb = common::sb().unwrap();
     let cmdline = format!("{} {}", sb.get_program().to_string_lossy(), args);
     let out = std::process::Command::new("script")
         .args(["-qec", &cmdline, "/dev/null"])
@@ -63,7 +63,7 @@ fn colour_is_on_for_a_tty_and_off_with_no_color_flag_or_env() {
 
 #[test]
 fn verbose_flag_emits_debug_lines_on_stderr_and_default_does_not() {
-    let verbose = Command::cargo_bin("sb")
+    let verbose = common::sb()
         .unwrap()
         .args(["--verbose", "version"])
         .output()
@@ -75,7 +75,7 @@ fn verbose_flag_emits_debug_lines_on_stderr_and_default_does_not() {
         "--verbose should log DEBUG lines, got: {stderr:?}"
     );
 
-    let quiet = Command::cargo_bin("sb")
+    let quiet = common::sb()
         .unwrap()
         .env_remove("RUST_LOG")
         .arg("version")
