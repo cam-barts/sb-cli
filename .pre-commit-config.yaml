@@ -1,3 +1,6 @@
+# Hooks without their own `stages` run only at commit time, so enabling the
+# post-merge hook below doesn't also run fmt/clippy after every pull.
+default_stages: [pre-commit]
 repos:
   - repo: local
     hooks:
@@ -11,4 +14,15 @@ repos:
         name: cargo clippy
         language: system
         entry: cargo clippy --all-targets -- -D warnings
+        pass_filenames: false
+
+      # Opt-in, local only: after a pull lands a new version on main, reinstall
+      # the local `sb` (cargo install, so `cargo clean` can't break it).
+      # Enable once with: pre-commit install --hook-type post-merge
+      - id: reinstall-if-released
+        name: reinstall sb if a release landed
+        language: system
+        entry: scripts/reinstall-if-released.sh
+        stages: [post-merge]
+        always_run: true
         pass_filenames: false
