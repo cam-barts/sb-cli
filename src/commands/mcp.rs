@@ -438,6 +438,229 @@ mod imp {
             assert_eq!(read_only.get("daily_append"), Some(&false));
         }
 
+        // --- tool behaviour against a real tempdir space / mock server ---
+        //
+        // The tool methods are plain async fns; calling them is exactly what
+        // the MCP dispatcher does after decoding params, so these exercise the
+        // observable result (files on disk, requests sent, error text).
+
+        use crate::test_util::{make_space, SbSpaceGuard};
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn enable_runtime(space_root: &std::path::Path) {
+            crate::config::update_config_value(
+                &space_root.join(".sb"),
+                "runtime",
+                "available",
+                true,
+            )
+            .unwrap();
+        }
+
+        fn create_args(name: &str, content: &str) -> Parameters<PageCreateArgs> {
+            Parameters(PageCreateArgs {
+                name: name.into(),
+                content: content.into(),
+            })
+        }
+
+        fn read_args(name: &str) -> Parameters<PageReadArgs> {
+            Parameters(PageReadArgs { name: name.into() })
+        }
+
+        #[tokio::test]
+        async fn page_create_writes_the_page_and_refuses_to_overwrite() {
+            let tmp = make_space(None);
+            let _g = SbSpaceGuard::set(tmp.path());
+            let server = SbMcpServer::new();
+
+            let msg = server
+                .page_create(create_args("Projects/idea", "# Idea\n"))
+                .await
+                .unwrap();
+            assert_eq!(msg, "created page 'Projects/idea'");
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join("Projects/idea.md")).unwrap(),
+                "# Idea\n"
+            );
+
+            let err = server
+                .page_create(create_args("Projects/idea", "clobber"))
+                .await
+                .unwrap_err();
+            assert!(err.message.contains("already exists"), "got: {err:?}");
+            assert_eq!(
+                std::fs::read_to_string(tmp.path().join("Projects/idea.md")).unwrap(),
+                "# Idea\n",
+                "an existing page must never be overwritten"
+            );
+        }
+
+        #[tokio::test]
+        async fn page_create_rejects_path_traversal_and_writes_nothing() {
+            let tmp = make_space(None);
+            // Reserve a unique name just outside the space, then free it, so a
+            // leaked write is detectable and cannot be a stale leftover.
+            let reserved = tempfile::Builder::new()
+                .suffix(".md")
+                .tempfile_in(tmp.path().parent().unwrap())
+                .unwrap();
+            let outer = reserved.path().to_path_buf();
+            drop(reserved);
+            let stem = outer.file_stem().unwrap().to_str().unwrap().to_string();
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let res = SbMcpServer::new()
+                .page_create(create_args(&format!("../{stem}"), "x"))
+                .await;
+            assert!(res.is_err());
+            assert!(
+                !outer.exists(),
+                "traversal must not write outside the space"
+            );
+        }
+
+        #[tokio::test]
+        async fn page_read_returns_content_and_maps_missing_and_traversal_to_errors() {
+            let tmp = make_space(None);
+            std::fs::write(tmp.path().join("Note.md"), "hello\n").unwrap();
+            let _g = SbSpaceGuard::set(tmp.path());
+            let server = SbMcpServer::new();
+
+            assert_eq!(
+                server.page_read(read_args("Note")).await.unwrap(),
+                "hello\n"
+            );
+
+            let missing = server.page_read(read_args("Nope")).await.unwrap_err();
+            assert_eq!(missing.code, ErrorData::resource_not_found("", None).code);
+            assert!(
+                missing.message.contains("'Nope' not found"),
+                "got: {missing:?}"
+            );
+
+            // A real file just outside the space must stay unreadable.
+            let secret = tempfile::Builder::new()
+                .suffix(".md")
+                .tempfile_in(tmp.path().parent().unwrap())
+                .unwrap();
+            std::fs::write(secret.path(), "secret").unwrap();
+            let stem = secret.path().file_stem().unwrap().to_str().unwrap();
+            let res = server.page_read(read_args(&format!("../{stem}"))).await;
+            assert!(res.is_err(), "traversal must not read outside the space");
+        }
+
+        #[tokio::test]
+        async fn page_list_returns_sorted_names_without_extension() {
+            let tmp = make_space(None);
+            std::fs::create_dir_all(tmp.path().join("Sub")).unwrap();
+            std::fs::write(tmp.path().join("b.md"), "").unwrap();
+            std::fs::write(tmp.path().join("a.md"), "").unwrap();
+            std::fs::write(tmp.path().join("Sub/c.md"), "").unwrap();
+            std::fs::write(tmp.path().join("image.png"), "").unwrap();
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let Json(list) = SbMcpServer::new().page_list().await.unwrap();
+            assert_eq!(list.pages, vec!["Sub/c", "a", "b"]);
+        }
+
+        #[tokio::test]
+        async fn query_runs_through_the_runtime_api_and_returns_the_result() {
+            let mock = MockServer::start().await;
+            Mock::given(method("POST"))
+                .and(path("/.runtime/lua_script"))
+                .and(body_string_contains(
+                    "return query[[from index.tag \"page\" limit 1]]",
+                ))
+                .respond_with(
+                    ResponseTemplate::new(200).set_body_string(r#"{"result":[{"name":"Index"}]}"#),
+                )
+                .mount(&mock)
+                .await;
+            let tmp = make_space(Some(&mock.uri()));
+            enable_runtime(tmp.path());
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let Json(res) = SbMcpServer::new()
+                .query(Parameters(QueryArgs {
+                    query: "from index.tag \"page\" limit 1".into(),
+                }))
+                .await
+                .unwrap();
+            assert_eq!(res.result, serde_json::json!([{"name": "Index"}]));
+        }
+
+        #[tokio::test]
+        async fn query_without_runtime_api_errors_and_sends_no_request() {
+            let mock = MockServer::start().await;
+            let tmp = make_space(Some(&mock.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let err = SbMcpServer::new()
+                .query(Parameters(QueryArgs {
+                    query: "from index.tag \"page\"".into(),
+                }))
+                .await
+                .err()
+                .expect("query must fail without the Runtime API");
+            assert!(err.message.contains("Runtime API"), "got: {err:?}");
+            assert!(mock.received_requests().await.unwrap().is_empty());
+        }
+
+        #[tokio::test]
+        async fn server_ping_reports_reachable_and_surfaces_server_errors() {
+            let mock = MockServer::start().await;
+            Mock::given(method("GET"))
+                .and(path("/.ping"))
+                .respond_with(ResponseTemplate::new(200))
+                .mount(&mock)
+                .await;
+            let tmp = make_space(Some(&mock.uri()));
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let Json(ping) = SbMcpServer::new().server_ping().await.unwrap();
+            assert!(ping.reachable);
+
+            mock.reset().await;
+            Mock::given(method("GET"))
+                .and(path("/.ping"))
+                .respond_with(ResponseTemplate::new(401))
+                .mount(&mock)
+                .await;
+            let err = SbMcpServer::new()
+                .server_ping()
+                .await
+                .err()
+                .expect("a 401 must fail the ping");
+            assert!(
+                err.message.contains("authentication failed"),
+                "got: {err:?}"
+            );
+        }
+
+        #[tokio::test]
+        async fn daily_append_adds_an_entry_to_todays_note() {
+            let tmp = make_space(None);
+            let _g = SbSpaceGuard::set(tmp.path());
+
+            let msg = SbMcpServer::new()
+                .daily_append(Parameters(DailyAppendArgs {
+                    text: "met the team".into(),
+                }))
+                .await
+                .unwrap();
+            assert!(msg.starts_with("appended to Journal/"), "got: {msg}");
+
+            let page = msg.strip_prefix("appended to ").unwrap();
+            let body = std::fs::read_to_string(tmp.path().join(format!("{page}.md"))).unwrap();
+            assert!(
+                body.lines()
+                    .any(|l| l.starts_with("* ") && l.ends_with("met the team")),
+                "got: {body:?}"
+            );
+        }
+
         // Kept despite the audit: dropping `enable_tools()` from get_info
         // would make clients see a server with no tools, and no other test
         // reaches get_info.
