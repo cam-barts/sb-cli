@@ -111,7 +111,8 @@ async fn init_failed_ping_removes_sb_directory() {
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("500"));
+        // "returned 500", not bare "500", which a mock port like 35004 matches.
+        .stderr(predicate::str::contains("returned 500"));
 
     // .sb/ should be completely removed after failed ping
     assert!(
@@ -181,15 +182,16 @@ async fn init_normalizes_trailing_slash_in_url() {
 
     let content = fs::read_to_string(temp_dir.path().join(".sb").join("config.toml"))
         .expect("read config.toml");
+    // Stored exactly as the URI without the trailing slash. (The old
+    // `!contains("//\"")` check couldn't fail: an untrimmed URL ends `:PORT/"`.)
+    let uri = server.uri();
     assert!(
-        !content.contains("//\""),
-        "config.toml should not end URL with trailing slash; got:\n{content}"
+        content.contains(&format!("server_url = \"{uri}\"")),
+        "config.toml should store {uri} with no trailing slash; got:\n{content}"
     );
-    // The stored URL should be the server URI without trailing slash
-    let expected_url = server.uri();
     assert!(
-        content.contains(&expected_url),
-        "config.toml should contain normalized URL {expected_url}; got:\n{content}"
+        !content.contains(&format!("{uri}/")),
+        "trailing slash survived; got:\n{content}"
     );
 }
 
@@ -226,6 +228,14 @@ async fn init_http_url_warns_about_insecure() {
 fn config_get_space_reports_sb_space_env_as_the_source() {
     let space = tempfile::TempDir::new().expect("space tempdir");
     let elsewhere = tempfile::TempDir::new().expect("cwd tempdir");
+    // The cwd is a space too, so this only passes if SB_SPACE wins the
+    // precedence, not merely because walk-up found nothing.
+    fs::create_dir_all(elsewhere.path().join(".sb")).unwrap();
+    fs::write(
+        elsewhere.path().join(".sb/config.toml"),
+        "server_url = \"https://cwd.example.com\"\n",
+    )
+    .unwrap();
 
     let output = Command::cargo_bin("sb")
         .unwrap()

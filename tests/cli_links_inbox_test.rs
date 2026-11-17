@@ -25,6 +25,13 @@ fn sb_in(dir: &std::path::Path) -> Command {
     let mut cmd = Command::cargo_bin("sb").unwrap();
     cmd.current_dir(dir)
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg");
+    // SB_SPACE outranks cwd and SB_SERVER_URL/SB_TOKEN outrank the space's
+    // config; never let a dev shell's values aim these at a real server.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("SB_") {
+            cmd.env_remove(key);
+        }
+    }
     cmd
 }
 

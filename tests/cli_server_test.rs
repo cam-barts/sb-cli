@@ -97,7 +97,7 @@ async fn server_config_json_format() {
         .and(path("/.config"))
         .respond_with(
             ResponseTemplate::new(200).set_body_string(
-                r#"{"readOnly":false,"spaceFolderPath":"/data/space","indexPage":"index","logPush":false,"enableClientEncryption":false}"#,
+                r#"{"readOnly":false,"spaceFolderPath":"/data/space","indexPage":"index","logPush":false,"enableClientEncryption":true}"#,
             ),
         )
         .mount(&server)
@@ -126,7 +126,7 @@ async fn server_config_json_format() {
             "spaceFolderPath": "/data/space",
             "indexPage": "index",
             "logPush": false,
-            "enableClientEncryption": false
+            "enableClientEncryption": true
         }),
         "got:\n{stdout}"
     );
