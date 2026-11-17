@@ -70,7 +70,13 @@ jobs:
       # is the ratchet — raise it (in a dedicated PR) when the repo holds a
       # new sustained high. Don't lower it without an explicit waiver from
       # the maintainer.
-      COVERAGE_MIN_PCT: "80"
+      #
+      # Caveat: the denominator includes the in-file `#[cfg(test)]` modules,
+      # so deleting a covered-but-pointless test LOWERS the percentage even
+      # when production coverage is unchanged (the 2026-11 test cleanup cut
+      # src missed regions 3053 -> 2980 while the figure fell 86.5% -> 84.9%).
+      # Keep the floor a little under the sustained high for that reason.
+      COVERAGE_MIN_PCT: "84"
     steps:
       - uses: actions/checkout@v4
         with:
