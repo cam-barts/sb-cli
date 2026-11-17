@@ -264,37 +264,4 @@ mod tests {
         assert_eq!(sorted.len(), 1);
         assert_eq!(sorted[0].entry.message, "ts");
     }
-
-    mod execute_tests {
-        use super::super::*;
-        use crate::test_util::{make_space, SbSpaceGuard};
-        use wiremock::matchers::{method, path};
-        use wiremock::{Mock, MockServer, ResponseTemplate};
-
-        #[tokio::test]
-        async fn execute_renders_entries_and_returns_when_not_following() {
-            let server = MockServer::start().await;
-            Mock::given(method("GET"))
-                .and(path("/.runtime/logs"))
-                .respond_with(ResponseTemplate::new(200).set_body_string(
-                    r#"{"client_logs":[{"level":"log","message":"hi","timestamp":1}],"server_logs":[]}"#,
-                ))
-                .mount(&server)
-                .await;
-            let tmp = make_space(Some(&server.uri()));
-            let _g = SbSpaceGuard::set(tmp.path());
-            execute(
-                None,
-                false,
-                100,
-                LogSource::Both,
-                None,
-                &OutputFormat::Json,
-                true,
-                false,
-            )
-            .await
-            .expect("non-follow path should return after one fetch");
-        }
-    }
 }

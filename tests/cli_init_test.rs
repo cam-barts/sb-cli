@@ -111,7 +111,7 @@ async fn init_failed_ping_removes_sb_directory() {
         .assert()
         .failure()
         .code(1)
-        .stderr(predicate::str::contains("500").or(predicate::str::contains("server")));
+        .stderr(predicate::str::contains("500"));
 
     // .sb/ should be completely removed after failed ping
     assert!(

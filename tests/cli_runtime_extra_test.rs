@@ -255,6 +255,23 @@ async fn lua_script_dash_reads_from_stdin() {
         .stdout(predicate::str::contains("hi"));
 }
 
+#[test]
+fn lua_script_and_expression_together_is_a_usage_error() {
+    // `conflicts_with = "expression"` on --script is repo code (src/cli.rs);
+    // the stderr check makes sure exit 2 came from that conflict, not some
+    // other parse failure.
+    let dir = setup_space("http://localhost:19999", true);
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["lua", "--script", "somefile.lua", "1 + 1"])
+        .current_dir(dir.path())
+        .assert()
+        .code(2)
+        .stderr(predicate::str::contains("cannot be used with"));
+}
+
 #[tokio::test]
 async fn lua_script_missing_file_is_filesystem_error_with_no_http_request() {
     let server = MockServer::start().await;
@@ -273,7 +290,8 @@ async fn lua_script_missing_file_is_filesystem_error_with_no_http_request() {
         .args(["lua", "--script", missing_path.to_str().unwrap()])
         .current_dir(dir.path())
         .assert()
-        .failure()
+        // A filesystem error is `general` (exit 1), not usage or not-found.
+        .code(1)
         .stderr(predicate::str::contains(
             missing_path.to_str().unwrap().to_string(),
         ));

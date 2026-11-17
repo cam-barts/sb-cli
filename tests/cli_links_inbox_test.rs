@@ -198,7 +198,9 @@ async fn inbox_to_cam_and_to_at_cam_send_the_identical_query() {
     sb_in(dir.path())
         .args(["--format", "json", "inbox", "--to", "cam"])
         .assert()
-        .success();
+        .success()
+        // The server's row must reach stdout: inbox::execute wires rows into render.
+        .stdout(predicate::str::contains("Some Page"));
     sb_in(dir.path())
         .args(["--format", "json", "inbox", "--to", "@cam"])
         .assert()

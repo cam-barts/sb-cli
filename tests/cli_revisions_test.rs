@@ -229,7 +229,7 @@ async fn diff_with_nothing_to_show_is_success_with_a_note_on_stderr() {
         .assert()
         .success()
         .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::is_empty().not());
+        .stderr(predicate::str::contains("no uncommitted changes to 'Note'"));
 }
 
 #[tokio::test]

@@ -445,6 +445,8 @@ mod imp {
         fn get_info_advertises_tools_capability() {
             let info = SbMcpServer::new().get_info();
             assert!(info.capabilities.tools.is_some());
+            // Clients display this name; nothing else in the suite checks it.
+            assert_eq!(info.server_info.name, "sb");
         }
     }
 }

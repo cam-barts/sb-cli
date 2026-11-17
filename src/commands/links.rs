@@ -619,8 +619,8 @@ mod tests {
     // that a call to it didn't error.
 
     #[test]
-    fn render_json_drops_snippet_when_fields_excludes_it() {
-        // Before: no --fields means no trimming, snippet survives.
+    fn render_json_keeps_snippet_by_default_and_drops_it_under_fields() {
+        // No --fields: no trimming, the snippet value survives.
         let mut buf = Vec::new();
         render(
             &relation_fixture(),
@@ -632,8 +632,8 @@ mod tests {
         )
         .unwrap();
         let untrimmed = String::from_utf8(buf).unwrap();
-        assert!(untrimmed.contains("snippet"));
-        // After: --fields to drops it.
+        assert!(untrimmed.contains("[[Library/Personal/Observatory]]"));
+        // --fields to: only the requested field is kept, the snippet goes.
         let mut buf = Vec::new();
         render(
             &relation_fixture(),

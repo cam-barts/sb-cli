@@ -354,8 +354,7 @@ mod tests {
     // --- execute_* end-to-end tests (space + wiremock, no interactive input) ---
 
     use crate::test_util::{make_space, SbSpaceGuard};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::MockServer;
 
     fn write_page(space_root: &std::path::Path, name: &str, content: &str) {
         std::fs::write(space_root.join(format!("{name}.md")), content).unwrap();
@@ -396,21 +395,5 @@ mod tests {
             .await
             .expect_err("no name + no TTY should error");
         assert_eq!(err.exit_code(), 2);
-    }
-
-    #[tokio::test]
-    async fn execute_diff_without_rev_handles_a_benign_404_as_ok() {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/.revisions/Note.md"))
-            .respond_with(ResponseTemplate::new(404))
-            .mount(&server)
-            .await;
-        let tmp = make_space(Some(&server.uri()));
-        write_page(tmp.path(), "Note", "content");
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        let result = execute_diff(None, Some("Note"), None, &OutputFormat::Json, true, false).await;
-        assert!(result.is_ok(), "a benign no-diff 404 must not be an Err");
     }
 }
