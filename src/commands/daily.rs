@@ -1367,6 +1367,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn ensure_day_file_creates_when_missing_returns_true() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let page_path = tmp.path().join("Journal").join("2026-05-18.md");
         let created = ensure_day_file(&page_path, tmp.path(), &config, None)
@@ -1380,6 +1383,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn ensure_day_file_returns_false_when_already_exists() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let dir = tmp.path().join("Journal");
         std::fs::create_dir_all(&dir).unwrap();
@@ -1544,6 +1550,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_returns_sorted_newest_first() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(tmp.path(), "2026-05-15.md", "* [time:: 09:00] earliest\n");
         seed_journal(
@@ -1565,6 +1574,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_applies_limit() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(
             tmp.path(),
@@ -1584,6 +1596,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_filters_by_on_flag() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(tmp.path(), "2026-05-15.md", "* [time:: 09:00] older\n");
         seed_journal(tmp.path(), "2026-05-18.md", "* [time:: 09:00] today\n");
@@ -1599,6 +1614,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_filters_by_contains() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(
             tmp.path(),
@@ -1617,6 +1635,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_filters_by_tags() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(
             tmp.path(),
@@ -1635,6 +1656,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_filters_by_starred() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(
             tmp.path(),
@@ -1653,6 +1677,9 @@ dateFormat = "%Y-%m-%d"
     #[test]
     fn collect_entries_positional_acts_as_contains() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         seed_journal(
             tmp.path(),
@@ -1673,6 +1700,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_appends_entry_with_time_attr() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1693,6 +1723,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_routes_via_date_prefix() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1711,6 +1744,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_with_star_writes_starred_attr() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1732,6 +1768,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_with_no_time_omits_time_attr() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1752,6 +1791,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_prefix_conflict_with_flag_errors() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1770,6 +1812,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_invalid_time_flag_errors() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1785,6 +1830,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_invalid_on_flag_errors() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1800,6 +1848,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn execute_write_legacy_append_flag_still_works() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let fmt = OutputFormat::Human;
         let mut args = default_args(&fmt);
@@ -1820,6 +1871,9 @@ dateFormat = "%Y-%m-%d"
     #[tokio::test]
     async fn fetch_template_content_returns_none_with_no_server_and_no_local() {
         let tmp = tempfile::tempdir().unwrap();
+        // Strips SB_* (SB_SERVER_URL/SB_TOKEN would send template fetches to
+        // the developer's real server) and isolates XDG, under the env lock.
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let got = super::fetch_template_content(tmp.path(), "Missing", &config, None)
             .await

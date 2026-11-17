@@ -16,17 +16,55 @@ use std::sync::{Mutex, MutexGuard};
 /// space a command resolves.
 pub static SB_SPACE_MUTEX: Mutex<()> = Mutex::new(());
 
+/// Strips every `SB_*` variable for its lifetime and puts the originals back on
+/// drop (removing any a test set meanwhile). The developer's SB_SERVER_URL /
+/// SB_TOKEN / SB_IDENTITY otherwise outrank a test's config and send real
+/// requests to their server. Only sound while holding `SB_SPACE_MUTEX`; embed
+/// it in a guard as a field declared BEFORE the lock, so it restores first.
+pub struct SbEnvScrub {
+    saved: Vec<(std::ffi::OsString, std::ffi::OsString)>,
+}
+
+fn sb_vars() -> Vec<(std::ffi::OsString, std::ffi::OsString)> {
+    std::env::vars_os()
+        .filter(|(k, _)| k.to_string_lossy().starts_with("SB_"))
+        .collect()
+}
+
+impl SbEnvScrub {
+    pub fn strip() -> Self {
+        let saved = sb_vars();
+        for (k, _) in &saved {
+            std::env::remove_var(k);
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for SbEnvScrub {
+    fn drop(&mut self) {
+        for (k, _) in sb_vars() {
+            std::env::remove_var(k);
+        }
+        for (k, v) in &self.saved {
+            std::env::set_var(k, v);
+        }
+    }
+}
+
 /// RAII guard that:
-/// - sets `SB_SPACE` to the tempdir for the duration of the test
+/// - strips every `SB_*` variable, then sets `SB_SPACE` to the tempdir
 /// - points `XDG_CONFIG_HOME` at a guaranteed-empty temp dir so the developer's
 ///   real `~/.config/sb/config.toml` doesn't leak into ResolvedConfig
 /// - holds the cross-test mutex
 ///
-/// Restores both env vars on drop.
+/// Restores the environment on drop.
 pub struct SbSpaceGuard {
+    // Field order matters: fields drop in declaration order, so the scrub
+    // restores the SB_* vars while the lock is still held.
+    _scrub: SbEnvScrub,
     _lock: MutexGuard<'static, ()>,
     _xdg_tmp: tempfile::TempDir,
-    prev_sb_space: Option<String>,
     prev_xdg: Option<String>,
 }
 
@@ -36,16 +74,16 @@ impl SbSpaceGuard {
             Ok(g) => g,
             Err(poisoned) => poisoned.into_inner(),
         };
-        let prev_sb_space = std::env::var("SB_SPACE").ok();
+        let scrub = SbEnvScrub::strip();
         std::env::set_var("SB_SPACE", path);
         // Isolate XDG so ResolvedConfig::load_from doesn't read the dev's real config.
         let prev_xdg = std::env::var("XDG_CONFIG_HOME").ok();
         let xdg_tmp = tempfile::tempdir().expect("create xdg isolate dir");
         std::env::set_var("XDG_CONFIG_HOME", xdg_tmp.path());
         Self {
+            _scrub: scrub,
             _lock: lock,
             _xdg_tmp: xdg_tmp,
-            prev_sb_space,
             prev_xdg,
         }
     }
@@ -53,10 +91,6 @@ impl SbSpaceGuard {
 
 impl Drop for SbSpaceGuard {
     fn drop(&mut self) {
-        match &self.prev_sb_space {
-            Some(v) => std::env::set_var("SB_SPACE", v),
-            None => std::env::remove_var("SB_SPACE"),
-        }
         match &self.prev_xdg {
             Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
             None => std::env::remove_var("XDG_CONFIG_HOME"),
