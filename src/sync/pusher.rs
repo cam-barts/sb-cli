@@ -69,8 +69,7 @@ pub async fn push(
     })??;
 
     // 3. Build HashMaps
-    let state_map: HashMap<String, SyncStateRow> =
-        rows.into_iter().map(|r| (r.path.clone(), r)).collect();
+    let state_map: HashMap<String, SyncStateRow> = filter.tracked(rows);
 
     // 4. Build HashSet of local file paths
     let local_set: HashSet<String> = local_files.iter().map(|f| f.rel_path.clone()).collect();
@@ -273,8 +272,7 @@ pub async fn plan_push(
     })??;
 
     // 3. Build HashMaps
-    let state_map: HashMap<String, SyncStateRow> =
-        rows.into_iter().map(|r| (r.path.clone(), r)).collect();
+    let state_map: HashMap<String, SyncStateRow> = filter.tracked(rows);
     let local_set: HashSet<String> = local_files.iter().map(|f| f.rel_path.clone()).collect();
 
     let mut actions: Vec<SyncAction> = Vec::new();
@@ -1855,6 +1853,78 @@ mod tests {
             fs::read_to_string(&file).expect("read"),
             "edited again",
             "a refusal never touches the file"
+        );
+    }
+
+    #[tokio::test]
+    async fn push_never_uploads_dot_prefixed_paths() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_space(dir.path());
+        for rel in [".DS_Store", ".obsidian/app.json", "notes/.draft.md"] {
+            let file = dir.path().join(rel);
+            fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+            fs::write(&file, b"x").expect("write");
+        }
+
+        let server = MockServer::start().await;
+        let attachments = FileFilter::new(&[], &[], true).expect("filter");
+        push(
+            &make_client(&server.uri()),
+            dir.path(),
+            &dir.path().join(".sb"),
+            &db_path,
+            &attachments,
+            4,
+            false,
+        )
+        .await
+        .expect("push");
+
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert!(requests.is_empty(), "no request for dotfiles: {requests:?}");
+    }
+
+    // Excluding a path that was already synced must stop syncing it, not read
+    // as "deleted locally" and delete the server's copy.
+    #[tokio::test]
+    async fn excluding_a_synced_path_never_deletes_it_from_the_server() {
+        let dir = TempDir::new().expect("tempdir");
+        let db_path = setup_space(dir.path());
+        let file = dir.path().join("Archive/old.md");
+        fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
+        fs::write(&file, b"keep me").expect("write");
+        let hash = crate::sync::scanner::hash_file(&file).expect("hash");
+        {
+            let mut db = StateDb::open(&db_path).expect("open db");
+            db.commit_batch(&[SyncResult::Synced {
+                path: "Archive/old.md".to_string(),
+                local_hash: hash.clone(),
+                remote_hash: hash,
+                remote_etag: None,
+                remote_mtime: 1700000000000,
+                local_mtime: 0,
+            }])
+            .expect("commit");
+        }
+
+        let server = MockServer::start().await;
+        let excludes = FileFilter::new(&["Archive/*".to_string()], &[], false).expect("filter");
+        let client = make_client(&server.uri());
+        let sb_dir = dir.path().join(".sb");
+
+        let planned = plan_push(&client, dir.path(), &sb_dir, &db_path, &excludes)
+            .await
+            .expect("plan_push");
+        assert!(planned.is_empty(), "nothing to do: {planned:?}");
+
+        let result = push(&client, dir.path(), &sb_dir, &db_path, &excludes, 4, false)
+            .await
+            .expect("push");
+        assert_eq!(result.deleted, 0);
+        let requests = server.received_requests().await.unwrap_or_default();
+        assert!(
+            requests.is_empty(),
+            "no request for an excluded path: {requests:?}"
         );
     }
 

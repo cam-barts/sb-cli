@@ -316,6 +316,34 @@ async fn sync_status_json_reports_marker_conflict_count_distinct_from_conflicts(
 }
 
 #[tokio::test]
+async fn sync_status_does_not_count_an_excluded_tracked_file_as_deleted() {
+    let dir = tempfile::tempdir().unwrap();
+    let server = MockServer::start().await;
+    let space = setup_space(&dir, &server.uri());
+    let config = space.join(".sb/config.toml");
+    let mut text = std::fs::read_to_string(&config).unwrap();
+    text.push_str("[sync]\nexclude = [\"Archive/*\"]\n");
+    std::fs::write(&config, text).unwrap();
+    std::fs::create_dir_all(space.join("space/Archive")).unwrap();
+    std::fs::write(space.join("space/Archive/old.md"), "keep").unwrap();
+    Connection::open(space.join(".sb/state.db"))
+        .unwrap()
+        .execute(
+            "INSERT INTO sync_state (path, local_hash, remote_hash) VALUES ('Archive/old.md', 'h', 'h')",
+            [],
+        )
+        .unwrap();
+
+    let assert = sb_in(&space)
+        .args(["sync", "status", "--format", "json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8(assert.get_output().stdout.clone()).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&stdout).expect("valid JSON");
+    assert_eq!(json["deleted"], 0, "stdout was: {stdout}");
+}
+
+#[tokio::test]
 async fn sync_status_marker_hint_suppressed_under_quiet() {
     let dir = tempfile::tempdir().unwrap();
     let server = MockServer::start().await;

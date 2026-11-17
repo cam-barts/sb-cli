@@ -79,16 +79,17 @@ impl FileFilter {
 
     /// Returns true if the file should be synced.
     ///
-    /// .sb/ paths are ALWAYS excluded — enforced by the scanner before
-    /// this method is called via filter_entry.
+    /// Any path with a dot-prefixed component (`.sb/`, `.git/`, `.DS_Store`,
+    /// `notes/.draft.md`) is ALWAYS excluded, even by an include pattern:
+    /// SilverBullet hides such paths from listings and refuses them over
+    /// `/.fs` (404 since 2.12.1), so they can never round-trip.
     ///
     /// Include overrides exclude: if the path matches an include pattern
     /// it is accepted even if it also matches an exclude pattern.
     ///
     /// When attachments_enabled=false, only .md files pass the filter.
     pub fn should_sync(&self, rel_path: &str) -> bool {
-        // .sb/ is always excluded — defend in depth even if caller misses it
-        if rel_path.starts_with(".sb/") || rel_path == ".sb" {
+        if rel_path.split('/').any(|part| part.starts_with('.')) {
             return false;
         }
         // include overrides exclude
@@ -103,6 +104,23 @@ impl FileFilter {
             return false;
         }
         true
+    }
+
+    /// Index state.db rows by path, keeping only paths this filter syncs.
+    ///
+    /// Without this, a row outside the filter reads as a deletion: a newly
+    /// excluded path is missing from the local scan, so push deletes the
+    /// server's copy; a tracked dotfile is missing from the server listing
+    /// (SilverBullet never lists them), so pull deletes the local copy.
+    /// Outside the filter means untouched, on both sides.
+    pub fn tracked(
+        &self,
+        rows: Vec<crate::sync::SyncStateRow>,
+    ) -> std::collections::HashMap<String, crate::sync::SyncStateRow> {
+        rows.into_iter()
+            .filter(|r| self.should_sync(&r.path))
+            .map(|r| (r.path.clone(), r))
+            .collect()
     }
 }
 
