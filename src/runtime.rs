@@ -434,5 +434,10 @@ mod tests {
 
         // Network error → record false, return false, do not propagate the error.
         assert!(!available);
+        let content = std::fs::read_to_string(sb_dir.join("config.toml")).unwrap();
+        assert!(
+            content.contains("available = false"),
+            "a failed probe must still record runtime.available=false, got: {content}"
+        );
     }
 }

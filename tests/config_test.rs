@@ -35,25 +35,6 @@ token = "secret123"
 }
 
 #[test]
-fn config_show_reveal_unmasks_token() {
-    let dir = setup_config_dir(
-        r#"
-server_url = "https://sb.test"
-token = "secret123"
-"#,
-    );
-
-    Command::cargo_bin("sb")
-        .unwrap()
-        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["config", "show", "--reveal"])
-        .current_dir(dir.path())
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("secret123"));
-}
-
-#[test]
 fn config_show_env_override() {
     let dir = setup_config_dir("");
 
@@ -123,6 +104,31 @@ token = "secret123"
 
     // Token should be masked by default
     assert_eq!(json["server"]["token"]["value"], "sec...123");
+}
+
+#[test]
+fn config_show_reveal_unmasks_token_in_human_format() {
+    // The human renderer applies --reveal itself (print_human), separately
+    // from the JSON path below, and human is the default format.
+    let dir = setup_config_dir(
+        r#"
+server_url = "https://sb.test"
+token = "secret123"
+"#,
+    );
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        // Never let a dev shell's space or token reach a --reveal run: a
+        // failure would print the real token into the test log.
+        .env_remove("SB_SPACE")
+        .env_remove("SB_TOKEN")
+        .args(["--format", "human", "config", "show", "--reveal"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("secret123"));
 }
 
 #[test]

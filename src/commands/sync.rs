@@ -1538,7 +1538,6 @@ fn humanize_last_sync(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sync::scanner::{hash_file, mtime_ms};
     use crate::test_util::{make_space, SbSpaceGuard};
 
     // --- humanize_last_sync ---
@@ -1561,16 +1560,20 @@ mod tests {
     /// "partial failure" branch and flatten the auth error to exit 1, so an
     /// unrelated sibling masked the one problem the user could actually act on.
     #[test]
-    fn one_category_of_failure_survives_an_unrelated_sibling() {
-        let failures = vec![(
-            "a.md".to_string(),
-            SbError::AuthFailed {
-                url: "u".into(),
-                status: 401,
-            },
-        )];
-        assert!(all_same_category(&failures));
-        assert_eq!(failures[0].1.exit_code(), 3);
+    fn one_or_several_failures_of_the_same_category_collapse_to_it() {
+        let auth = |status| SbError::AuthFailed {
+            url: "u".into(),
+            status,
+        };
+        let one = vec![("a.md".to_string(), auth(401))];
+        assert!(all_same_category(&one));
+        assert_eq!(one[0].1.exit_code(), 3);
+
+        let several = vec![
+            ("a.md".to_string(), auth(401)),
+            ("b.md".to_string(), auth(403)),
+        ];
+        assert!(all_same_category(&several));
     }
 
     #[test]
@@ -1596,29 +1599,6 @@ mod tests {
             !all_same_category(&failures),
             "auth and server faults must not report as one code"
         );
-    }
-
-    /// Two failures of the same category report that category regardless of
-    /// which task finished first.
-    #[test]
-    fn same_category_holds_across_several_failures() {
-        let failures = vec![
-            (
-                "a.md".to_string(),
-                SbError::AuthFailed {
-                    url: "u".into(),
-                    status: 401,
-                },
-            ),
-            (
-                "b.md".to_string(),
-                SbError::AuthFailed {
-                    url: "u".into(),
-                    status: 403,
-                },
-            ),
-        ];
-        assert!(all_same_category(&failures));
     }
 
     #[test]
@@ -1679,36 +1659,6 @@ mod tests {
             let (name, _path, _reason) = sync_action_parts(&action);
             assert_eq!(name, expected, "wrong name for {action:?}");
         }
-    }
-
-    // --- format_dry_run_output ---
-
-    #[test]
-    fn format_dry_run_empty_actions_human_renders_nothing_to_sync() {
-        // Function writes to stdout — we can't capture it here, just ensure no error.
-        format_dry_run_output(&[], &OutputFormat::Human, false).unwrap();
-    }
-
-    #[test]
-    fn format_dry_run_empty_actions_json_renders_empty_array() {
-        format_dry_run_output(&[], &OutputFormat::Json, false).unwrap();
-    }
-
-    #[test]
-    fn format_dry_run_with_actions_succeeds_in_both_formats() {
-        let actions = vec![
-            SyncAction::Upload {
-                path: "a.md".into(),
-                reason: "new".into(),
-            },
-            SyncAction::Download {
-                path: "b.md".into(),
-                reason: "remote-new".into(),
-                remote_mtime: 1,
-            },
-        ];
-        format_dry_run_output(&actions, &OutputFormat::Human, false).unwrap();
-        format_dry_run_output(&actions, &OutputFormat::Json, false).unwrap();
     }
 
     // --- find_stash_files ---
@@ -1815,33 +1765,6 @@ mod tests {
             SbError::Filesystem { message, .. } => assert!(message.contains("no stash file")),
             other => panic!("expected Filesystem, got: {other:?}"),
         }
-    }
-
-    #[test]
-    fn find_stash_file_returns_only_match_when_one_exists() {
-        let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("conflicts")).unwrap();
-        let stash = tmp.path().join("conflicts").join("Doc.20260101T000000.md");
-        std::fs::write(&stash, "stash body").unwrap();
-        let got = find_stash_file(tmp.path(), "Doc.md", true).unwrap();
-        assert_eq!(got, stash);
-    }
-
-    #[test]
-    fn find_stash_file_picks_most_recent_when_multiple_match() {
-        let tmp = tempfile::tempdir().unwrap();
-        let conflicts = tmp.path().join("conflicts");
-        std::fs::create_dir_all(&conflicts).unwrap();
-        let older = conflicts.join("Doc.20260101T000000.md");
-        let newer = conflicts.join("Doc.20260102T000000.md");
-        std::fs::write(&older, "older").unwrap();
-        // Sleep ensures mtime differs on filesystems with second precision.
-        std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(&newer, "newer").unwrap();
-        let got = find_stash_file(tmp.path(), "Doc.md", true).unwrap();
-        // most-recent by mtime should win
-        let body = std::fs::read_to_string(&got).unwrap();
-        assert_eq!(body, "newer");
     }
 
     #[test]
@@ -1974,167 +1897,6 @@ mod tests {
             stashed_paths(&conflicts),
             vec!["Doc.md".to_string(), "Work/Career/Okta.md".to_string()]
         );
-    }
-
-    // --- compute_hash_and_mtime ---
-
-    #[tokio::test]
-    async fn compute_hash_and_mtime_returns_hash_matching_scanner() {
-        let tmp = tempfile::tempdir().unwrap();
-        let file = tmp.path().join("x.md");
-        std::fs::write(&file, b"hello world").unwrap();
-        let expected = hash_file(&file).unwrap();
-        let expected_mtime = std::fs::metadata(&file).map(|m| mtime_ms(&m)).unwrap();
-        let (h, m) = compute_hash_and_mtime(file).await.unwrap();
-        assert_eq!(h, expected);
-        assert_eq!(m, expected_mtime);
-    }
-
-    // --- should_print_marker_hint ---
-
-    #[test]
-    fn should_print_marker_hint_true_when_markers_present_and_not_quiet() {
-        assert!(should_print_marker_hint(3, false));
-    }
-
-    #[test]
-    fn should_print_marker_hint_false_when_quiet() {
-        assert!(!should_print_marker_hint(3, true));
-    }
-
-    #[test]
-    fn should_print_marker_hint_false_when_no_markers() {
-        assert!(!should_print_marker_hint(0, false));
-        assert!(!should_print_marker_hint(0, true));
-    }
-
-    // --- execute_status (no-client path) ---
-
-    #[tokio::test]
-    async fn execute_status_with_empty_space_reports_zero_counts() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_status(&OutputFormat::Json, false)
-            .await
-            .expect("status");
-    }
-
-    #[tokio::test]
-    async fn execute_status_counts_new_files() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        std::fs::create_dir_all(tmp.path().join("space")).unwrap();
-        std::fs::write(tmp.path().join("space").join("a.md"), "x").unwrap();
-        std::fs::write(tmp.path().join("space").join("b.md"), "y").unwrap();
-        execute_status(&OutputFormat::Human, false)
-            .await
-            .expect("status");
-    }
-
-    #[tokio::test]
-    async fn execute_status_json_reports_marker_conflicts_without_panicking() {
-        // sync.dir = "." in make_space, so content lives at the space root.
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        std::fs::write(
-            tmp.path().join("Marked.md"),
-            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
-        )
-        .unwrap();
-        std::fs::write(tmp.path().join("Clean.md"), "fine").unwrap();
-
-        // Exercises the marker-scan + JSON-shape code path added by this
-        // feature; end-to-end tests (tests/cli_sync_test.rs) assert on the
-        // actual "marker_conflicts" field value and --quiet hint text.
-        execute_status(&OutputFormat::Json, false)
-            .await
-            .expect("status");
-    }
-
-    // --- execute_conflicts (no-client path) ---
-
-    #[tokio::test]
-    async fn execute_conflicts_with_empty_db_renders_no_conflicts_human() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_conflicts(&OutputFormat::Human, true)
-            .await
-            .expect("conflicts");
-    }
-
-    #[tokio::test]
-    async fn execute_conflicts_with_empty_db_renders_empty_array_json() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        execute_conflicts(&OutputFormat::Json, true)
-            .await
-            .expect("conflicts json");
-    }
-
-    #[tokio::test]
-    async fn execute_conflicts_lists_conflict_rows_from_state_db() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-        // Seed state.db with a conflict row.
-        let db_path = tmp.path().join(".sb").join("state.db");
-        let db = StateDb::open(&db_path).unwrap();
-        db.upsert_row(&crate::sync::SyncStateRow {
-            path: "Conflict.md".into(),
-            local_hash: Some("lh".into()),
-            remote_hash: Some("rh".into()),
-            remote_etag: None,
-            remote_mtime: 1000,
-            local_mtime: 2000,
-            status: SyncStatus::Conflict,
-            conflict_at: 1700000000000,
-        })
-        .unwrap();
-        drop(db);
-        execute_conflicts(&OutputFormat::Human, true)
-            .await
-            .expect("conflicts");
-        execute_conflicts(&OutputFormat::Json, true)
-            .await
-            .expect("conflicts json");
-    }
-
-    #[tokio::test]
-    async fn execute_conflicts_reports_marker_conflicts_distinct_from_stash() {
-        let tmp = make_space(Some("https://example.com"));
-        let _g = SbSpaceGuard::set(tmp.path());
-
-        // A stash (metadata-driven) conflict.
-        let db_path = tmp.path().join(".sb").join("state.db");
-        let db = StateDb::open(&db_path).unwrap();
-        db.upsert_row(&crate::sync::SyncStateRow {
-            path: "Stashed.md".into(),
-            local_hash: Some("lh".into()),
-            remote_hash: Some("rh".into()),
-            remote_etag: None,
-            remote_mtime: 1000,
-            local_mtime: 2000,
-            status: SyncStatus::Conflict,
-            conflict_at: 1700000000000,
-        })
-        .unwrap();
-        drop(db);
-
-        // A marker conflict (content-driven) on a different, untracked file.
-        std::fs::write(
-            tmp.path().join("Marked.md"),
-            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch\n",
-        )
-        .unwrap();
-
-        // Both formats should succeed and not conflate the two kinds; the
-        // exact text/kind-tagging is asserted end-to-end in
-        // tests/cli_sync_test.rs where stdout can actually be captured.
-        execute_conflicts(&OutputFormat::Human, true)
-            .await
-            .expect("conflicts human");
-        execute_conflicts(&OutputFormat::Json, true)
-            .await
-            .expect("conflicts json");
     }
 
     // --- parse_choice ---

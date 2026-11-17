@@ -482,45 +482,6 @@ mod tests {
     }
 
     #[test]
-    fn open_creates_sync_state_and_sync_meta_tables() {
-        let (_db, tmp) = open_temp_db();
-        // Reopen to verify tables persist
-        let conn = rusqlite::Connection::open(tmp.path()).expect("reopen db");
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name IN ('sync_state', 'sync_meta')",
-                [],
-                |r| r.get(0),
-            )
-            .expect("query table count");
-        assert_eq!(
-            count, 2,
-            "both sync_state and sync_meta tables should exist"
-        );
-    }
-
-    #[test]
-    fn sync_state_has_correct_columns() {
-        let (_db, tmp) = open_temp_db();
-        let conn = rusqlite::Connection::open(tmp.path()).expect("reopen db");
-        // PRAGMA table_info returns: cid, name, type, notnull, dflt_value, pk
-        let mut stmt = conn
-            .prepare("PRAGMA table_info(sync_state)")
-            .expect("prepare pragma");
-        let cols: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(1))
-            .expect("query cols")
-            .map(|r| r.expect("col name"))
-            .collect();
-        assert!(cols.contains(&"path".to_string()));
-        assert!(cols.contains(&"local_hash".to_string()));
-        assert!(cols.contains(&"remote_hash".to_string()));
-        assert!(cols.contains(&"remote_mtime".to_string()));
-        assert!(cols.contains(&"local_mtime".to_string()));
-        assert!(cols.contains(&"status".to_string()));
-    }
-
-    #[test]
     fn wal_journal_mode_enabled_after_open() {
         let (_db, tmp) = open_temp_db();
         let conn = rusqlite::Connection::open(tmp.path()).expect("reopen db");
@@ -531,21 +492,33 @@ mod tests {
     }
 
     #[test]
-    fn upsert_row_inserts_and_get_row_retrieves_it() {
+    fn upsert_row_round_trips_every_column() {
+        // A distinct value per column, so a swapped or dropped column shows.
         let (db, _tmp) = open_temp_db();
-        let row = make_row("notes/page.md");
+        let row = SyncStateRow {
+            path: "notes/page.md".to_string(),
+            local_hash: Some("blake3local".to_string()),
+            remote_hash: Some("blake3remote".to_string()),
+            remote_etag: Some("\"sha256:cafe\"".to_string()),
+            remote_mtime: 1700000000111,
+            local_mtime: 1700000000222,
+            status: SyncStatus::Conflict,
+            conflict_at: 1700000000333,
+        };
         db.upsert_row(&row).expect("upsert_row");
 
-        let retrieved = db
+        let got = db
             .get_row("notes/page.md")
             .expect("get_row")
             .expect("row should exist");
-        assert_eq!(retrieved.path, "notes/page.md");
-        assert_eq!(retrieved.local_hash, Some("abc123".to_string()));
-        assert_eq!(retrieved.remote_hash, Some("def456".to_string()));
-        assert_eq!(retrieved.remote_mtime, 1700000000000i64);
-        assert_eq!(retrieved.local_mtime, 1700000001000i64);
-        assert_eq!(retrieved.status, SyncStatus::Synced);
+        assert_eq!(got.path, row.path);
+        assert_eq!(got.local_hash, row.local_hash);
+        assert_eq!(got.remote_hash, row.remote_hash);
+        assert_eq!(got.remote_etag, row.remote_etag);
+        assert_eq!(got.remote_mtime, row.remote_mtime);
+        assert_eq!(got.local_mtime, row.local_mtime);
+        assert_eq!(got.status, row.status);
+        assert_eq!(got.conflict_at, row.conflict_at);
     }
 
     #[test]
@@ -581,10 +554,19 @@ mod tests {
         row2.status = SyncStatus::Synced;
         let mut row3 = make_row("page3.md");
         row3.status = SyncStatus::Conflict;
+        let mut row4 = make_row("Library/Std/Config.md");
+        row4.status = SyncStatus::ReadOnly;
 
         db.upsert_row(&row1).expect("upsert 1");
         db.upsert_row(&row2).expect("upsert 2");
         db.upsert_row(&row3).expect("upsert 3");
+        db.upsert_row(&row4).expect("upsert 4");
+
+        let readonly = db
+            .get_rows_by_status(&SyncStatus::ReadOnly)
+            .expect("get_rows_by_status readonly");
+        assert_eq!(readonly.len(), 1);
+        assert_eq!(readonly[0].path, "Library/Std/Config.md");
 
         let conflicts = db
             .get_rows_by_status(&SyncStatus::Conflict)
@@ -631,29 +613,6 @@ mod tests {
     }
 
     #[test]
-    fn commit_batch_conflict_updates_status_to_conflict() {
-        let (mut db, _tmp) = open_temp_db();
-        // Pre-insert the row as synced
-        db.upsert_row(&make_row("notes/page.md")).expect("upsert");
-
-        let results = vec![SyncResult::Conflict {
-            path: "notes/page.md".to_string(),
-            conflict_at: 0,
-        }];
-        db.commit_batch(&results).expect("commit_batch");
-
-        let row = db
-            .get_row("notes/page.md")
-            .expect("get_row")
-            .expect("row should still exist");
-        assert_eq!(
-            row.status,
-            SyncStatus::Conflict,
-            "status should be conflict"
-        );
-    }
-
-    #[test]
     fn commit_batch_deleted_removes_row() {
         let (mut db, _tmp) = open_temp_db();
         db.upsert_row(&make_row("notes/page.md")).expect("upsert");
@@ -668,61 +627,45 @@ mod tests {
     }
 
     #[test]
-    fn commit_batch_is_atomic_writes_multiple_entries() {
-        let (mut db, _tmp) = open_temp_db();
-        // Pre-insert two rows for conflict/delete
-        db.upsert_row(&make_row("conflict.md"))
-            .expect("upsert conflict");
-        db.upsert_row(&make_row("deleted.md"))
-            .expect("upsert deleted");
+    fn commit_batch_rolls_back_every_entry_when_a_later_one_fails() {
+        let (mut db, tmp) = open_temp_db();
+        db.upsert_row(&make_row("deleted.md")).expect("seed");
 
+        // Inject a mid-batch failure: the DB rejects inserting boom.md.
+        rusqlite::Connection::open(tmp.path())
+            .expect("second connection")
+            .execute_batch(
+                "CREATE TRIGGER boom BEFORE INSERT ON sync_state
+                 WHEN NEW.path = 'boom.md'
+                 BEGIN SELECT RAISE(ABORT, 'injected failure'); END;",
+            )
+            .expect("create trigger");
+
+        let synced = |path: &str| SyncResult::Synced {
+            path: path.to_string(),
+            local_hash: "h1".to_string(),
+            remote_hash: "h2".to_string(),
+            remote_etag: None,
+            remote_mtime: 1700000000000,
+            local_mtime: 1700000001000,
+        };
         let results = vec![
-            SyncResult::Synced {
-                path: "new.md".to_string(),
-                local_hash: "h1".to_string(),
-                remote_hash: "h2".to_string(),
-                remote_etag: None,
-                remote_mtime: 1700000000000,
-                local_mtime: 1700000001000,
-            },
-            SyncResult::Conflict {
-                path: "conflict.md".to_string(),
-                conflict_at: 0,
-            },
+            synced("first.md"),
             SyncResult::Deleted {
                 path: "deleted.md".to_string(),
             },
+            synced("boom.md"),
         ];
-        db.commit_batch(&results).expect("commit_batch");
+        assert!(db.commit_batch(&results).is_err(), "the batch must fail");
 
-        // Verify all three outcomes applied atomically
-        let new_row = db
-            .get_row("new.md")
-            .expect("get new.md")
-            .expect("new.md should exist");
-        assert_eq!(new_row.status, SyncStatus::Synced);
-
-        let conflict_row = db
-            .get_row("conflict.md")
-            .expect("get conflict.md")
-            .expect("conflict.md should still exist");
-        assert_eq!(conflict_row.status, SyncStatus::Conflict);
-
-        let deleted = db.get_row("deleted.md").expect("get deleted.md");
-        assert!(deleted.is_none(), "deleted.md should be gone");
-    }
-
-    #[test]
-    fn set_meta_and_get_meta_store_and_retrieve_values() {
-        let (db, _tmp) = open_temp_db();
-        db.set_meta("last_sync", "2026-04-06T00:00:00Z")
-            .expect("set_meta");
-
-        let val = db
-            .get_meta("last_sync")
-            .expect("get_meta")
-            .expect("value should exist");
-        assert_eq!(val, "2026-04-06T00:00:00Z");
+        assert!(
+            db.get_row("first.md").expect("get").is_none(),
+            "an entry written before the failure must be rolled back"
+        );
+        assert!(
+            db.get_row("deleted.md").expect("get").is_some(),
+            "a delete before the failure must be rolled back"
+        );
     }
 
     #[test]
@@ -747,25 +690,6 @@ mod tests {
             .expect("get_meta")
             .expect("value should exist");
         assert_eq!(val, "second_value", "second write should overwrite first");
-    }
-
-    #[test]
-    fn sync_state_has_conflict_at_column() {
-        let (_db, tmp) = open_temp_db();
-        let conn = rusqlite::Connection::open(tmp.path()).expect("reopen db");
-        let mut stmt = conn
-            .prepare("PRAGMA table_info(sync_state)")
-            .expect("prepare");
-        let cols: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(1))
-            .expect("query")
-            .map(|r| r.expect("col"))
-            .collect();
-        assert!(
-            cols.contains(&"conflict_at".to_string()),
-            "sync_state should have conflict_at column; found: {:?}",
-            cols
-        );
     }
 
     #[test]
@@ -953,22 +877,6 @@ mod tests {
     }
 
     #[test]
-    fn upsert_and_get_round_trip_the_etag() {
-        let (db, _tmp) = open_temp_db();
-        let mut row = make_row("page.md");
-        row.remote_etag = Some("\"sha256:cafe\"".to_string());
-        db.upsert_row(&row).expect("upsert");
-
-        let got = db.get_row("page.md").expect("get").expect("exists");
-        assert_eq!(got.remote_etag, Some("\"sha256:cafe\"".to_string()));
-        assert_eq!(
-            got.remote_hash,
-            Some("def456".to_string()),
-            "etag and blake3 remote_hash are separate columns"
-        );
-    }
-
-    #[test]
     fn commit_batch_persists_the_etag_of_a_synced_result() {
         let (mut db, _tmp) = open_temp_db();
         db.commit_batch(&[SyncResult::Synced {
@@ -986,8 +894,13 @@ mod tests {
     }
 
     #[test]
-    fn commit_batch_stores_null_etag_when_the_server_gave_none() {
+    fn commit_batch_clears_a_stored_etag_when_the_server_gave_none() {
         let (mut db, _tmp) = open_temp_db();
+        // The column defaults to NULL, so start from a real etag: only a
+        // commit that actively writes NULL can make it go away.
+        let mut row = make_row("page.md");
+        row.remote_etag = Some("\"sha256:stale\"".to_string());
+        db.upsert_row(&row).expect("seed");
         db.commit_batch(&[SyncResult::Synced {
             path: "page.md".to_string(),
             local_hash: "blake3aaa".to_string(),
@@ -1049,21 +962,5 @@ mod tests {
             "what we know about the server copy is still true after a refusal"
         );
         assert_eq!(got.remote_mtime, 1700000000000);
-    }
-
-    #[test]
-    fn get_rows_by_status_finds_readonly_rows() {
-        let (mut db, _tmp) = open_temp_db();
-        db.commit_batch(&[SyncResult::ReadOnly {
-            path: "Library/Std/Config.md".to_string(),
-            local_hash: "h".to_string(),
-        }])
-        .expect("commit");
-
-        let rows = db
-            .get_rows_by_status(&SyncStatus::ReadOnly)
-            .expect("query by status");
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].path, "Library/Std/Config.md");
     }
 }

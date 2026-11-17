@@ -525,28 +525,13 @@ mod tests {
     }
 
     #[test]
-    fn file_filter_exclude_plug_rejects_plug_files() {
+    fn file_filter_exclude_plug_rejects_plug_files_and_accepts_others() {
         let excludes = vec!["_plug/*".to_string()];
         let filter = FileFilter::new(&excludes, &[], false).expect("create filter");
-        assert!(
-            !filter.should_sync("_plug/core.js"),
-            "should reject _plug/core.js"
-        );
-        assert!(
-            !filter.should_sync("_plug/search.js"),
-            "should reject _plug/search.js"
-        );
-    }
-
-    #[test]
-    fn file_filter_exclude_plug_accepts_other_files() {
-        let excludes = vec!["_plug/*".to_string()];
-        let filter = FileFilter::new(&excludes, &[], false).expect("create filter");
-        assert!(
-            filter.should_sync("Journal/note.md"),
-            "should accept Journal/note.md"
-        );
-        assert!(filter.should_sync("index.md"), "should accept index.md");
+        assert!(!filter.should_sync("_plug/core.js"));
+        assert!(!filter.should_sync("_plug/search.js"));
+        assert!(filter.should_sync("Journal/note.md"));
+        assert!(filter.should_sync("index.md"));
     }
 
     #[test]
@@ -567,64 +552,49 @@ mod tests {
     }
 
     #[test]
-    fn file_filter_always_rejects_sb_directory_sync21() {
-        // .sb/ is rejected even with no exclude patterns
-        let filter = FileFilter::new(&[], &[], false).expect("create filter");
-        assert!(
-            !filter.should_sync(".sb/config.toml"),
-            "should always reject .sb/"
-        );
-        assert!(
-            !filter.should_sync(".sb/state.db"),
-            "should always reject .sb/"
-        );
-    }
-
-    #[test]
-    fn file_filter_sb_directory_rejected_even_with_include() {
-        // include patterns cannot override .sb/ exclusion
-        let includes = vec![".sb/*".to_string(), ".sb/config.toml".to_string()];
-        let filter = FileFilter::new(&[], &includes, false).expect("create filter");
-        assert!(
-            !filter.should_sync(".sb/config.toml"),
-            ".sb/ cannot be included"
-        );
-        assert!(
-            !filter.should_sync(".sb/state.db"),
-            ".sb/ cannot be included"
-        );
+    fn file_filter_always_rejects_dot_prefixed_paths() {
+        // Rejected with no patterns, with attachments on, and even when an
+        // include pattern names them explicitly.
+        let includes = vec![
+            ".sb/*".to_string(),
+            ".sb/config.toml".to_string(),
+            ".DS_Store".to_string(),
+        ];
+        for (label, filter) in [
+            ("plain", FileFilter::new(&[], &[], false)),
+            ("attachments", FileFilter::new(&[], &[], true)),
+            ("includes", FileFilter::new(&[], &includes, true)),
+        ] {
+            let filter = filter.expect("create filter");
+            for rel in [
+                ".sb/config.toml",
+                ".sb/state.db",
+                ".git/x",
+                "notes/.draft.md",
+                ".DS_Store",
+            ] {
+                assert!(!filter.should_sync(rel), "{label}: {rel} must be rejected");
+            }
+        }
     }
 
     // --- hash_file tests ---
 
     #[test]
-    fn hash_file_returns_consistent_blake3_for_known_content() {
+    fn hash_file_matches_hash_bytes_across_the_read_buffer_boundary() {
+        // hash_file reads in 64 KiB chunks; a file spanning several chunks (and
+        // ending mid-chunk) must hash exactly like the same bytes in memory.
         let dir = TempDir::new().expect("create tempdir");
-        let path = dir.path().join("test.md");
-        fs::write(&path, b"hello world").expect("write file");
+        let path = dir.path().join("big.md");
+        let content: Vec<u8> = (0..(64 * 1024 * 2 + 123))
+            .map(|i| (i % 251) as u8)
+            .collect();
+        fs::write(&path, &content).expect("write file");
 
-        let hash1 = hash_file(&path).expect("hash file");
-        let hash2 = hash_file(&path).expect("hash file again");
-
-        assert_eq!(hash1, hash2, "same content should produce same hash");
-        // blake3 hex is 64 chars
-        assert_eq!(hash1.len(), 64, "blake3 hex should be 64 chars");
-    }
-
-    #[test]
-    fn hash_file_different_content_produces_different_hash() {
-        let dir = TempDir::new().expect("create tempdir");
-        let path1 = dir.path().join("a.md");
-        let path2 = dir.path().join("b.md");
-        fs::write(&path1, b"content A").expect("write a");
-        fs::write(&path2, b"content B").expect("write b");
-
-        let hash1 = hash_file(&path1).expect("hash a");
-        let hash2 = hash_file(&path2).expect("hash b");
-
-        assert_ne!(
-            hash1, hash2,
-            "different content should produce different hashes"
+        assert_eq!(
+            hash_file(&path).expect("hash file"),
+            hash_bytes(&content),
+            "chunked file hash must equal the one-shot hash"
         );
     }
 
@@ -682,47 +652,33 @@ mod tests {
     }
 
     #[test]
-    fn scanner_skips_files_matching_exclude_patterns() {
+    fn scanner_applies_exclude_and_include_patterns() {
         let dir = TempDir::new().expect("create tempdir");
         fs::create_dir(dir.path().join("_plug")).expect("mkdir _plug");
         fs::write(dir.path().join("_plug/core.js"), b"plugin code").expect("write plugin");
-        fs::write(dir.path().join("note.md"), b"note content").expect("write note");
-
-        let scanner = make_scanner(&["_plug/*"], &[]);
-        let results = scanner.scan(dir.path()).expect("scan");
-
-        let paths: Vec<&str> = results.iter().map(|r| r.rel_path.as_str()).collect();
-        assert!(
-            !paths.contains(&"_plug/core.js"),
-            "_plug/core.js should be excluded"
-        );
-        assert!(paths.contains(&"note.md"), "note.md should be included");
-    }
-
-    #[test]
-    fn scanner_includes_files_matching_include_even_if_excluded() {
-        let dir = TempDir::new().expect("create tempdir");
         fs::write(dir.path().join("temp.tmp"), b"temp file").expect("write temp");
         fs::write(dir.path().join("important.tmp"), b"important temp").expect("write important");
         fs::write(dir.path().join("note.md"), b"note content").expect("write note");
 
-        let scanner = make_scanner(&["*.tmp"], &["important.tmp"]);
-        let results = scanner.scan(dir.path()).expect("scan");
+        let scanner = make_scanner(&["_plug/*", "*.tmp"], &["important.tmp"]);
+        let mut paths: Vec<String> = scanner
+            .scan(dir.path())
+            .expect("scan")
+            .into_iter()
+            .map(|r| r.rel_path)
+            .collect();
+        paths.sort();
 
-        let paths: Vec<&str> = results.iter().map(|r| r.rel_path.as_str()).collect();
-        assert!(
-            paths.contains(&"important.tmp"),
-            "important.tmp should be included via include"
-        );
-        assert!(!paths.contains(&"temp.tmp"), "temp.tmp should be excluded");
-        assert!(paths.contains(&"note.md"), "note.md should be included");
+        // _plug/* and temp.tmp excluded; the include rescues important.tmp.
+        assert_eq!(paths, vec!["important.tmp", "note.md"]);
     }
 
     #[test]
-    fn scanner_computes_hash_and_captures_mtime() {
+    fn scanner_computes_hash_size_and_mtime() {
         let dir = TempDir::new().expect("create tempdir");
         let content = b"test content for hashing";
-        fs::write(dir.path().join("note.md"), content).expect("write note");
+        let file = dir.path().join("note.md");
+        fs::write(&file, content).expect("write note");
 
         let scanner = make_scanner(&[], &[]);
         let results = scanner.scan(dir.path()).expect("scan");
@@ -730,22 +686,15 @@ mod tests {
         assert_eq!(results.len(), 1);
         let info = &results[0];
 
-        // Verify hash is a valid blake3 hex (64 chars)
-        assert_eq!(info.hash.len(), 64, "hash should be 64 hex chars");
+        assert_eq!(info.hash, hash_bytes(content));
+        assert_eq!(info.size, content.len() as u64);
+        let actual_mtime = mtime_ms(&fs::metadata(&file).expect("metadata"));
+        assert!(actual_mtime > 0);
         assert!(
-            info.hash.chars().all(|c| c.is_ascii_hexdigit()),
-            "hash should be hex"
+            (info.mtime_ms - actual_mtime).abs() <= 1000,
+            "scan mtime {} should match file mtime {actual_mtime}",
+            info.mtime_ms
         );
-
-        // Verify hash matches direct hash_file call
-        let expected_hash = hash_file(&dir.path().join("note.md")).expect("hash file");
-        assert_eq!(
-            info.hash, expected_hash,
-            "scan hash should match direct hash_file"
-        );
-
-        // mtime_ms should be non-zero (file was just created)
-        assert!(info.mtime_ms > 0, "mtime_ms should be positive");
     }
 
     #[test]
@@ -798,19 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn file_filter_attachments_true_still_rejects_sb_dir() {
-        let filter = FileFilter::new(&[], &[], true).expect("create filter");
-        assert!(
-            !filter.should_sync(".sb/config.toml"),
-            ".sb/ must always be rejected even with attachments=true"
-        );
-        assert!(
-            !filter.should_sync(".sb/state.db"),
-            ".sb/ must always be rejected even with attachments=true"
-        );
-    }
-
-    #[test]
     fn file_filter_attachments_true_still_respects_excludes() {
         let excludes = vec!["*.tmp".to_string()];
         let filter = FileFilter::new(&excludes, &[], true).expect("create filter");
@@ -830,12 +766,9 @@ mod tests {
     fn has_conflict_markers_detects_sb_style_marker_triple() {
         let content = "before\n<<<<<<< SB sha256:1a2b3c4d\nours\n=======\ntheirs\n>>>>>>> SB sha256:5e6f7a8b\nafter\n";
         assert!(has_conflict_markers(content));
-    }
-
-    #[test]
-    fn has_conflict_markers_detects_plain_git_markers() {
-        let content = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch-name\n";
-        assert!(has_conflict_markers(content));
+        // Plain git labels are detected by the same rule.
+        let git = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> branch-name\n";
+        assert!(has_conflict_markers(git));
     }
 
     #[test]
@@ -951,13 +884,6 @@ Resolve the conflict by editing the file to keep the parts you want.
         );
     }
 
-    #[test]
-    fn has_conflict_markers_clean_file_is_not_flagged() {
-        assert!(!has_conflict_markers(
-            "# Just a normal page\n\nSome text.\n"
-        ));
-    }
-
     // --- is_conflicted_sibling_name ---
 
     #[test]
@@ -1018,20 +944,6 @@ Resolve the conflict by editing the file to keep the parts you want.
     }
 
     #[test]
-    fn scan_marker_conflicts_flags_plain_git_markers() {
-        let dir = TempDir::new().expect("create tempdir");
-        fs::write(
-            dir.path().join("GitConflict.md"),
-            "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature-branch\n",
-        )
-        .expect("write");
-
-        let results = scan_marker_conflicts(dir.path()).expect("scan");
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].kind, MarkerConflictKind::InlineMarkers);
-    }
-
-    #[test]
     fn scan_marker_conflicts_ignores_fenced_documentation_example() {
         let dir = TempDir::new().expect("create tempdir");
         fs::write(
@@ -1076,13 +988,6 @@ Resolve the conflict by editing the file to keep the parts you want.
 
         let results = scan_marker_conflicts(dir.path()).expect("scan");
         assert!(results.is_empty(), ".sb/ must never be scanned");
-    }
-
-    #[test]
-    fn scan_marker_conflicts_empty_space_returns_empty_vec() {
-        let dir = TempDir::new().expect("create tempdir");
-        let results = scan_marker_conflicts(dir.path()).expect("scan");
-        assert!(results.is_empty());
     }
 
     #[test]

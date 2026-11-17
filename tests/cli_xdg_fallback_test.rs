@@ -146,9 +146,10 @@ async fn per_space_token_overrides_xdg_token() {
 }
 
 #[test]
-fn missing_both_files_fails_with_error_mentioning_xdg() {
-    // No per-space file, no XDG sb config: the error surface should mention
-    // both the per-space and XDG paths so the user understands the lookup order.
+fn no_token_in_either_file_fails_with_error_mentioning_xdg() {
+    // Per-space config has no token and the XDG dir is empty: the error surface
+    // should mention both the per-space and XDG paths so the user understands
+    // the lookup order.
     let space = tempfile::tempdir().expect("create space tempdir");
     let xdg = tempfile::tempdir().expect("create xdg tempdir");
     // Empty per-space config (server_url but no token) so we get past space

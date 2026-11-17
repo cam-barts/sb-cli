@@ -260,26 +260,6 @@ mod tests {
     }
 
     #[test]
-    fn output_config_new_sets_quiet() {
-        let config = OutputConfig::new(true, false, false);
-        assert!(config.quiet);
-        assert!(!config.verbose);
-    }
-
-    #[test]
-    fn output_config_new_sets_verbose() {
-        let config = OutputConfig::new(false, true, false);
-        assert!(config.verbose);
-        assert!(!config.quiet);
-    }
-
-    #[test]
-    fn output_config_no_color_flag_disables_color() {
-        let config = OutputConfig::new(false, false, true);
-        assert!(!config.color);
-    }
-
-    #[test]
     fn format_error_with_color_contains_ansi_and_error_prefix() {
         // Force console crate to emit colors even in non-TTY test environment
         console::set_colors_enabled(true);
@@ -316,7 +296,18 @@ mod tests {
     }
 
     #[test]
-    fn format_error_with_hint_contains_arrow() {
+    fn format_error_appends_the_hint_on_its_own_arrow_line() {
+        // NotInitialized has no #[source], so the only `->` line can come from the hint.
+        let err = crate::error::SbError::NotInitialized;
+        let hint = err.hint().expect("NotInitialized carries a hint");
+        assert_eq!(
+            format_error(&err, false),
+            format!("error: {err}\n  -> {hint}")
+        );
+    }
+
+    #[test]
+    fn format_error_lists_the_source_chain_before_the_hint() {
         let err = crate::error::SbError::Network {
             url: "http://localhost:3000".to_string(),
             source: Box::new(std::io::Error::new(
@@ -324,10 +315,10 @@ mod tests {
                 "connection refused",
             )),
         };
-        let output = format_error(&err, false);
-        assert!(
-            output.contains("->"),
-            "error with hint should contain -> arrow"
+        let hint = err.hint().expect("Network carries a hint");
+        assert_eq!(
+            format_error(&err, false),
+            format!("error: {err}\n  -> connection refused\n  -> {hint}")
         );
     }
 
@@ -382,28 +373,6 @@ mod tests {
     }
 
     #[test]
-    fn format_error_json_never_contains_ansi() {
-        console::set_colors_enabled(true);
-        let err = crate::error::SbError::Usage("bad".to_string());
-        assert!(
-            !format_error_json(&err).contains("\x1b["),
-            "JSON errors must never carry ANSI codes"
-        );
-    }
-
-    #[test]
-    fn print_success_suppressed_when_quiet() {
-        // Should not panic and should return immediately
-        print_success("test", false, true);
-    }
-
-    #[test]
-    fn print_warning_suppressed_when_quiet() {
-        // Should not panic and should return immediately
-        print_warning("test", false, true);
-    }
-
-    #[test]
     fn is_plug_path_matches_plug_directory() {
         assert!(is_plug_path("_plug/search.js"));
         assert!(is_plug_path("_plug/nested/file.md"));
@@ -419,11 +388,21 @@ mod tests {
     }
 
     #[test]
-    fn detect_case_insensitive_fs_works() {
+    #[cfg(target_os = "linux")]
+    fn detect_case_insensitive_fs_reports_case_sensitive_and_leaves_no_probe() {
         let tmpdir = tempfile::TempDir::new().unwrap();
-        // This test will return true on Windows/macOS, false on Linux ext4
-        // We just verify it doesn't error out
-        let result = detect_case_insensitive_fs(tmpdir.path());
-        assert!(result.is_ok());
+        // tmpfs/ext4/btrfs are case-sensitive: the lowercase probe never aliases.
+        assert!(!detect_case_insensitive_fs(tmpdir.path()).unwrap());
+        assert_eq!(
+            std::fs::read_dir(tmpdir.path()).unwrap().count(),
+            0,
+            "the probe file must be cleaned up"
+        );
+    }
+
+    #[test]
+    fn detect_case_insensitive_fs_errors_when_the_dir_is_missing() {
+        let missing = tempfile::TempDir::new().unwrap().path().join("gone");
+        assert!(detect_case_insensitive_fs(&missing).is_err());
     }
 }
