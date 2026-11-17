@@ -107,6 +107,27 @@ token = "secret123"
 }
 
 #[test]
+fn config_show_reveal_unmasks_token_in_human_format() {
+    // The human renderer applies --reveal itself (print_human), separately
+    // from the JSON path below, and human is the default format.
+    let dir = setup_config_dir(
+        r#"
+server_url = "https://sb.test"
+token = "secret123"
+"#,
+    );
+
+    Command::cargo_bin("sb")
+        .unwrap()
+        .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
+        .args(["--format", "human", "config", "show", "--reveal"])
+        .current_dir(dir.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("secret123"));
+}
+
+#[test]
 fn config_show_json_reveal_shows_full_token() {
     let dir = setup_config_dir(
         r#"

@@ -971,11 +971,6 @@ workers = 2
     }
 
     #[test]
-    fn mask_token_short_string() {
-        assert_eq!(mask_token("ab"), "***");
-    }
-
-    #[test]
     fn mask_token_empty_string() {
         assert_eq!(mask_token(""), "");
     }
@@ -989,6 +984,14 @@ workers = 2
     fn mask_token_handles_multibyte_utf8() {
         // emoji characters are 4 bytes each — byte slicing would panic or split one
         assert_eq!(mask_token("🔑ab-secret-cd🔑"), "🔑ab...cd🔑");
+    }
+
+    #[test]
+    fn mask_token_hides_every_length_below_six_behind_a_fixed_mask() {
+        // Fixed width, so the mask doesn't leak a short token's length.
+        for t in ["a", "ab", "abc", "abcde"] {
+            assert_eq!(mask_token(t), "***", "token {t:?}");
+        }
     }
 
     #[test]
@@ -1055,6 +1058,11 @@ workers = 2
     fn config_source_display_names_the_user_config_layer() {
         // `sb config show` prints this; it must tell the XDG layer from the per-space one.
         assert_eq!(ConfigSource::UserFile.to_string(), "user config");
+        // Flag's text appears nowhere else in the suite.
+        assert_eq!(
+            ConfigSource::Flag("--workers".into()).to_string(),
+            "flag: --workers"
+        );
         assert_ne!(
             ConfigSource::UserFile.to_string(),
             ConfigSource::File.to_string()

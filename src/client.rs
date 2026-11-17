@@ -1385,6 +1385,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_412_on_a_conditional_write_is_a_conflict_exit_5() {
+        // Writes go through check_response_write, a different path from the
+        // read above; this is the 412 a stale If-Match actually produces.
+        let server = MockServer::start().await;
+        Mock::given(method("PUT"))
+            .and(path("/.fs/note.md"))
+            .and(header("If-Match", "\"sha256:stale\""))
+            .respond_with(ResponseTemplate::new(412))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        let err = client
+            .put_file(
+                "note.md",
+                Bytes::from_static(b"x"),
+                Some("\"sha256:stale\""),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(err.exit_code(), 5, "412 is a conflict");
+        assert!(
+            matches!(err, SbError::PreconditionFailed { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn get_runtime_logs_puts_limit_and_since_on_the_wire() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/.runtime/logs"))
+            .and(query_param("limit", "50"))
+            .and(query_param("since", "1700000000000"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("{}"))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let client = make_client(&server.uri(), "testtoken");
+        client
+            .get_runtime_logs(Some(50), Some(1_700_000_000_000))
+            .await
+            .expect("limit and since must both reach the server");
+    }
+
+    #[tokio::test]
     async fn request_returning_404_produces_http_status_error() {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
