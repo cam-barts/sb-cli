@@ -500,7 +500,9 @@ impl SbClient {
     /// POST `<endpoint>` with a JSON body (e.g., "/.shell").
     ///
     /// The `endpoint` is a path like `/.shell` (NOT a full URL).
-    /// Returns the raw Response so callers can inspect status and body.
+    /// Returns the raw Response so callers can inspect status and body, except
+    /// 401/403, which become `AuthFailed` here so every caller exits 3 with
+    /// the token hint instead of failing to parse an auth page.
     pub async fn post_json<T: serde::Serialize>(
         &self,
         endpoint: &str,
@@ -511,13 +513,18 @@ impl SbClient {
             bytes::Bytes::from(serde_json::to_vec(body).map_err(|e| SbError::Config {
                 message: format!("failed to serialize request body: {e}"),
             })?);
-        self.send_with_retry(&url, || {
-            self.inner
-                .post(&url)
-                .header(header::CONTENT_TYPE, "application/json")
-                .body(json_bytes.clone())
-        })
-        .await
+        let resp = self
+            .send_with_retry(&url, || {
+                self.inner
+                    .post(&url)
+                    .header(header::CONTENT_TYPE, "application/json")
+                    .body(json_bytes.clone())
+            })
+            .await?;
+        match status_error(resp.status(), &url, false) {
+            Some(e) => Err(e),
+            None => Ok(resp),
+        }
     }
 
     /// GET `/.runtime/logs` — fetch buffered client and server logs.
