@@ -130,10 +130,11 @@ they happen when something annoying enough accumulates.
 
 ## Gotchas worth knowing before debugging
 
-- **Weak ETags through Cloudflare.** Conditional writes (`If-Match`) need a *strong* ETag.
-  `bullet.coder.cam` returns a weak one through Cloudflare, so sync silently falls back to the
-  older behaviour. `sb --verbose` reports which it got. Anyone chasing a lost write needs this
-  first.
+- **Weak ETags through Cloudflare.** Conditional writes (`If-Match`) need a *strong* revision.
+  Cloudflare weakens `ETag`, so SilverBullet >= 2.12.1 also sends `x-silverbullet-revision`,
+  which sb prefers. Against an older server behind Cloudflare, sync silently falls back to
+  unconditional writes. `sb --verbose` reports which it got. Anyone chasing a lost write needs
+  this first.
 - **Runtime API vs `sb lua`.** Runtime commands post to `/.runtime/lua_script` and are gated on
   `config.runtime_available`; `sb query` fails with "Runtime API not available on this server" when
   the server's headless browser is down, while `sb lua` (the `/.runtime/lua` endpoint, a different
