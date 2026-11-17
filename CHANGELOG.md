@@ -1,3 +1,13 @@
+## v1.11.0 (2026-11-17)
+
+### Feat
+
+- **search**: sb search via the server's full-text index
+
+### Fix
+
+- **client**: JSON POSTs report 401/403 as auth failures
+
 ## v1.10.0 (2026-11-17)
 
 ### Feat
