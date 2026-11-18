@@ -578,7 +578,7 @@ async fn render_from_raw(
     }
 }
 
-async fn render_via_runtime(cli_token: Option<&str>, body: &str) -> SbResult<String> {
+pub(crate) async fn render_via_runtime(cli_token: Option<&str>, body: &str) -> SbResult<String> {
     let client = build_client(cli_token)?;
     let script = format!(
         "local _tmpl = template.new({})\nreturn _tmpl({{}})",
@@ -742,6 +742,12 @@ fn splice_cursor(text: &str, fill: Option<&str>) -> String {
 /// onto its own line.
 pub(crate) fn read_piped_stdin() -> SbResult<Option<String>> {
     use std::io::Read;
+    // Unit tests must never read the test process's own stdin: under a runner
+    // whose stdin is an open pipe that never closes (an agent harness, an IDE,
+    // a backgrounded shell) the `execute_new` tests blocked here forever.
+    if cfg!(test) {
+        return Ok(None);
+    }
     if std::io::stdin().is_terminal() {
         return Ok(None);
     }
