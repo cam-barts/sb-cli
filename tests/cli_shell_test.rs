@@ -173,8 +173,13 @@ async fn shell_propagates_exit_code() {
 }
 
 /// Run `sb --format human shell failing-cmd` against a server whose shell
-/// answers with the given stderr and exit code.
+/// answers with the given stderr and exit code (`run_failing_shell_as` takes
+/// the format).
 async fn run_failing_shell(stderr: &str, code: i32) -> assert_cmd::assert::Assert {
+    run_failing_shell_as("human", stderr, code).await
+}
+
+async fn run_failing_shell_as(format: &str, stderr: &str, code: i32) -> assert_cmd::assert::Assert {
     let server = MockServer::start().await;
     let body = serde_json::json!({"stdout": "", "stderr": stderr, "code": code});
     Mock::given(method("POST"))
@@ -186,9 +191,50 @@ async fn run_failing_shell(stderr: &str, code: i32) -> assert_cmd::assert::Asser
     common::sb()
         .unwrap()
         .env("XDG_CONFIG_HOME", "/nonexistent-sb-test-xdg")
-        .args(["--format", "human", "shell", "failing-cmd"])
+        .args(["--format", format, "shell", "failing-cmd"])
         .current_dir(dir.path())
         .assert()
+}
+
+#[tokio::test]
+async fn shell_failure_prints_child_stderr_exactly_once() {
+    let assert = run_failing_shell("boom\n", 7).await.code(7);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    assert_eq!(stderr.matches("boom").count(), 1, "stderr was: {stderr}");
+    assert!(stderr.contains("process exited with code 7"), "{stderr}");
+    assert!(!stderr.contains("-> stderr:"), "{stderr}");
+}
+
+#[tokio::test]
+async fn shell_failure_json_error_does_not_echo_stderr_as_remediation() {
+    let assert = run_failing_shell_as("json", "boom\n", 7).await.code(7);
+    let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+    let err_line = stderr.lines().find(|l| l.starts_with('{')).expect(&stderr);
+    let v: serde_json::Value = serde_json::from_str(err_line).unwrap();
+    assert_eq!(v["code"], "process_failed");
+    assert!(v["remediation"].is_null(), "got: {v}");
+    assert_eq!(stderr.matches("boom").count(), 1, "stderr was: {stderr}");
+}
+
+/// Child stderr without a trailing newline must not glue onto sb's error
+/// line: the JSON error object has to sit on its own line to be parseable.
+#[tokio::test]
+async fn shell_failure_with_unterminated_stderr_keeps_the_error_on_its_own_line() {
+    for format in ["json", "human"] {
+        let assert = run_failing_shell_as(format, "boom", 7).await.code(7);
+        let stderr = String::from_utf8(assert.get_output().stderr.clone()).unwrap();
+        let lines: Vec<&str> = stderr.lines().collect();
+        assert_eq!(lines.first(), Some(&"boom"), "{format}: {stderr:?}");
+        if format == "json" {
+            let v: serde_json::Value = serde_json::from_str(lines[1]).expect(&stderr);
+            assert_eq!(v["code"], "process_failed");
+        } else {
+            assert!(
+                lines[1].starts_with("error: process exited with code 7"),
+                "{stderr:?}"
+            );
+        }
+    }
 }
 
 #[tokio::test]

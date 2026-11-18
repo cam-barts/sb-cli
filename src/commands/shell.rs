@@ -76,6 +76,12 @@ pub async fn execute(
 
     // Non-zero exit code = propagate as ProcessFailed
     if shell_resp.code != 0 {
+        // sb's error line follows on stderr. Without a newline it would glue
+        // onto unterminated child output, and the JSON error object would no
+        // longer start its own line.
+        if !shell_resp.stderr.is_empty() && !shell_resp.stderr.ends_with('\n') {
+            eprintln!();
+        }
         return Err(SbError::ProcessFailed {
             code: shell_resp.code,
             stderr: shell_resp.stderr,

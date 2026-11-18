@@ -240,9 +240,6 @@ impl SbError {
             SbError::Database { .. } => {
                 Some("check that .sb/state.db is accessible and not corrupted".to_string())
             }
-            SbError::ProcessFailed { stderr, .. } if !stderr.is_empty() => {
-                Some(format!("stderr: {stderr}"))
-            }
             SbError::ConfirmationRequired { rerun, .. } => Some(format!("re-run with: {rerun}")),
             SbError::RuntimeTimeout { seconds } => Some(format!(
                 "Raise the limit with `--timeout <seconds>` (currently {seconds})"
