@@ -1,3 +1,9 @@
+## v1.11.3 (2026-11-18)
+
+### Fix
+
+- **shell**: print a failing command's stderr once (#28)
+
 ## v1.11.2 (2026-11-17)
 
 ### Fix
