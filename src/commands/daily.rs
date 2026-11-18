@@ -190,8 +190,10 @@ pub fn format_entry(
     }
     for line in lines {
         out.push('\n');
-        out.push_str("  ");
-        out.push_str(line);
+        if !line.trim().is_empty() {
+            out.push_str("  ");
+            out.push_str(line);
+        }
     }
     out
 }
@@ -212,7 +214,8 @@ pub struct JournalEntry {
 ///
 /// A bullet starts with `* ` or `- ` at the beginning of a line. Subsequent
 /// lines that begin with at least 2 spaces are treated as continuation of the
-/// same bullet. Anything else terminates the bullet.
+/// same bullet, as are blank lines followed by more indented lines. Anything
+/// else terminates the bullet.
 pub fn parse_entries(content: &str, date: Date, source_page: &str) -> Vec<JournalEntry> {
     let lines: Vec<&str> = content.lines().collect();
     let mut out = Vec::new();
@@ -229,7 +232,21 @@ pub fn parse_entries(content: &str, date: Date, source_page: &str) -> Vec<Journa
             let mut j = i + 1;
             while j < lines.len() {
                 let next = lines[j];
-                if let Some(rest) = next.strip_prefix("  ") {
+                if next.trim().is_empty() {
+                    // A blank line stays inside the bullet when the next
+                    // non-blank line is still indented: that is a paragraph
+                    // break within one entry, as in Markdown. Editors strip
+                    // the `  ` that `sb daily` used to write on these lines.
+                    let resumes = lines[j..]
+                        .iter()
+                        .find(|l| !l.trim().is_empty())
+                        .is_some_and(|l| l.starts_with("  "));
+                    if !resumes {
+                        break;
+                    }
+                    body_lines.push(String::new());
+                    j += 1;
+                } else if let Some(rest) = next.strip_prefix("  ") {
                     body_lines.push(rest.to_string());
                     j += 1;
                 } else {
@@ -341,6 +358,7 @@ pub(crate) async fn ensure_day_file(
     content_dir: &Path,
     config: &ResolvedConfig,
     cli_token: Option<&str>,
+    date: &Date,
 ) -> SbResult<bool> {
     if page_path.exists() {
         return Ok(false);
@@ -352,12 +370,12 @@ pub(crate) async fn ensure_day_file(
             source: Some(e),
         })?;
     }
-    let content = if let Some(ref template_name) = config.daily_template.value {
-        fetch_template_content(content_dir, template_name, config, cli_token)
-            .await?
-            .unwrap_or_default()
-    } else {
-        String::new()
+    let content = match config.daily_template.value.as_deref() {
+        Some(name) => match fetch_template_content(content_dir, name, config, cli_token).await? {
+            Some(raw) => render_daily_template(&raw, date, config, cli_token).await,
+            None => String::new(),
+        },
+        None => String::new(),
     };
     std::fs::write(page_path, &content).map_err(|e| SbError::Filesystem {
         message: "failed to create daily note".into(),
@@ -367,15 +385,80 @@ pub(crate) async fn ensure_day_file(
     Ok(true)
 }
 
+/// Fill `{{date}}` / `{{weekday}}` placeholders with the note's own date.
+///
+/// The note's date, not today's: a note created by `--on` or `--yesterday`
+/// must title itself correctly, which SilverBullet's `${date.today()}` cannot.
+/// `{{date}}` uses `daily.dateFormat`, the same token and format as `daily.path`.
+pub fn fill_date_placeholders(raw: &str, date: &Date, date_format: &str) -> String {
+    raw.replace("{{date}}", &date.strftime(date_format).to_string())
+        .replace("{{weekday}}", &date.strftime("%A").to_string())
+}
+
+/// Turn a daily template's raw content into the new note's content.
+///
+/// Date placeholders are filled first. A real SilverBullet page template
+/// (tagged `meta/template/page`) is then instantiated the way SilverBullet does
+/// it: the template's own frontmatter is replaced by its `frontmatter:` payload,
+/// so the template tag never lands on the note, and its `${...}` is rendered
+/// through the Runtime API when available (a render failure keeps the
+/// unrendered text). A plain file is used as is, `${...}` included, exactly as
+/// SilverBullet leaves a plain page: a shell snippet's `${VAR}` survives.
+pub(crate) async fn render_daily_template(
+    raw: &str,
+    date: &Date,
+    config: &ResolvedConfig,
+    cli_token: Option<&str>,
+) -> String {
+    use crate::commands::template::{
+        instantiate_template, is_page_template, render_via_runtime, split_frontmatter,
+    };
+    let filled = fill_date_placeholders(raw, date, &config.daily_date_format.value);
+    let is_template = split_frontmatter(&filled).is_some_and(|(fm, _)| is_page_template(fm));
+    if !is_template {
+        return filled;
+    }
+    let content = instantiate_template(&filled, None);
+    if !content.contains("${") || !config.runtime_available.value {
+        return content;
+    }
+    match render_via_runtime(cli_token, &content).await {
+        Ok(rendered) => rendered,
+        Err(e) => {
+            tracing::warn!("daily template render failed, using unrendered content: {e}");
+            content
+        }
+    }
+}
+
 /// Append a formatted entry to the day's note, prefixing with a newline when
 /// the file already has trailing content.
-pub(crate) fn append_entry(page_path: &Path, entry_md: &str) -> SbResult<()> {
-    let needs_leading_newline = std::fs::metadata(page_path)
-        .map(|m| m.len() > 0)
-        .unwrap_or(false)
-        && std::fs::read(page_path)
-            .map(|b| b.last().copied() != Some(b'\n'))
-            .unwrap_or(true);
+pub(crate) fn append_entry(page_path: &Path, entry_md: &str, spacing: bool) -> SbResult<()> {
+    let existing = std::fs::read(page_path).unwrap_or_default();
+    let prefix = if existing.is_empty() {
+        ""
+    } else if !spacing {
+        if existing.ends_with(b"\n") {
+            ""
+        } else {
+            "\n"
+        }
+    } else {
+        // Newlines inside the trailing whitespace run: 0 = mid-line, 1 = line
+        // ended, 2+ = a blank line is already there (also for CRLF endings
+        // and whitespace-only lines such as an indented continuation blank).
+        let newlines = existing
+            .iter()
+            .rev()
+            .take_while(|b| b.is_ascii_whitespace())
+            .filter(|&&b| b == b'\n')
+            .count();
+        match newlines {
+            0 => "\n\n",
+            1 => "\n",
+            _ => "",
+        }
+    };
 
     let mut file = std::fs::OpenOptions::new()
         .append(true)
@@ -386,7 +469,6 @@ pub(crate) fn append_entry(page_path: &Path, entry_md: &str) -> SbResult<()> {
             source: Some(e),
         })?;
 
-    let prefix = if needs_leading_newline { "\n" } else { "" };
     file.write_all(format!("{}{}\n", prefix, entry_md).as_bytes())
         .map_err(|e| SbError::Filesystem {
             message: "failed to append to daily note".into(),
@@ -524,7 +606,8 @@ async fn execute_write_or_editor(
                 "--task requires entry text (a task needs a body)".into(),
             ));
         }
-        let created = ensure_day_file(&page_path, space_root, config, args.cli_token).await?;
+        let created =
+            ensure_day_file(&page_path, space_root, config, args.cli_token, &date).await?;
         if created {
             output::print_success(&format!("Created {}", page_name), args.color, args.quiet);
         }
@@ -537,7 +620,7 @@ async fn execute_write_or_editor(
         return open_in_editor(&page_path).await;
     }
 
-    let created = ensure_day_file(&page_path, space_root, config, args.cli_token).await?;
+    let created = ensure_day_file(&page_path, space_root, config, args.cli_token, &date).await?;
     if created {
         output::print_success(&format!("Created {}", page_name), args.color, args.quiet);
     }
@@ -579,7 +662,7 @@ async fn execute_write_or_editor(
     // line below it. See `page::append_signature` for the full rationale.
     let entry_md = crate::commands::page::append_signature(&entry_md, args.sign);
 
-    append_entry(&page_path, &entry_md)?;
+    append_entry(&page_path, &entry_md, config.daily_entry_spacing.value)?;
     output::print_success(
         &format!("Appended to {}", page_name),
         args.color,
@@ -749,12 +832,9 @@ pub fn collect_entries(
         }
     }
 
-    entries.sort_by(|a, b| {
-        b.date
-            .cmp(&a.date)
-            .then_with(|| b.time.cmp(&a.time))
-            .then_with(|| a.body.cmp(&b.body))
-    });
+    // Newest first. The sort is stable, so entries sharing a timestamp keep
+    // their order in the file: an entry stays ahead of the tasks it filed.
+    entries.sort_by(|a, b| b.date.cmp(&a.date).then_with(|| b.time.cmp(&a.time)));
 
     if let Some(n) = args.limit {
         entries.truncate(n);
@@ -775,17 +855,62 @@ async fn execute_read(
             config.daily_path.value
         );
     }
+    // Wrap to the terminal only when a person is reading it; a pipe or file
+    // gets one line per source line so grep and diff stay meaningful.
+    let width = if output::is_tty() {
+        console::Term::stdout()
+            .size_checked()
+            .map(|(_, w)| (w as usize).min(MAX_WRAP_WIDTH))
+    } else {
+        None
+    };
+    let style = RenderStyle {
+        color: args.color,
+        width,
+    };
     let stdout = std::io::stdout();
     let mut handle = stdout.lock();
-    render_entries(&entries, args.format, args.short, &mut handle)
+    render_entries_styled(&entries, args.format, args.short, style, &mut handle)
 }
 
+/// Lines wrap at the terminal width, but never wider than this: long measure
+/// is hard to read on a wide terminal.
+const MAX_WRAP_WIDTH: usize = 110;
+
+/// Indent of an entry's body under its `  HH:MM  ` gutter.
+const BODY_INDENT: usize = 9;
+
+/// How human output is decorated.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RenderStyle {
+    /// ANSI styling (date headers, times, links, tags, attributes).
+    pub color: bool,
+    /// Wrap body text to this many columns; `None` keeps source lines intact.
+    pub width: Option<usize>,
+}
+
+/// Render entries with no color and no wrapping (stable output for tests and pipes).
 pub fn render_entries(
     entries: &[JournalEntry],
     format: &OutputFormat,
     short: bool,
     out: &mut dyn Write,
 ) -> SbResult<()> {
+    render_entries_styled(entries, format, short, RenderStyle::default(), out)
+}
+
+pub fn render_entries_styled(
+    entries: &[JournalEntry],
+    format: &OutputFormat,
+    short: bool,
+    style: RenderStyle,
+    out: &mut dyn Write,
+) -> SbResult<()> {
+    let write_err = |e: std::io::Error| SbError::Filesystem {
+        message: "failed to write entries".into(),
+        path: "<stdout>".into(),
+        source: Some(e),
+    };
     match format {
         OutputFormat::Json => {
             #[derive(serde::Serialize)]
@@ -795,6 +920,7 @@ pub fn render_entries(
                 starred: bool,
                 tags: &'a [String],
                 body: &'a str,
+                attrs: &'a BTreeMap<String, String>,
                 source_page: &'a str,
             }
             let json: Vec<JsonEntry> = entries
@@ -805,50 +931,346 @@ pub fn render_entries(
                     starred: e.starred,
                     tags: &e.tags,
                     body: &e.body,
+                    attrs: &e.attrs,
                     source_page: &e.source_page,
                 })
                 .collect();
             let s = serde_json::to_string_pretty(&json).map_err(|e| SbError::Config {
                 message: format!("failed to serialize entries: {e}"),
             })?;
-            writeln!(out, "{}", s).map_err(|e| SbError::Filesystem {
-                message: "failed to write entries".into(),
-                path: "<stdout>".into(),
-                source: Some(e),
-            })?;
+            writeln!(out, "{}", s).map_err(write_err)?;
+        }
+        OutputFormat::Human if short => {
+            for e in entries {
+                let first = e.body.lines().next().unwrap_or("");
+                let truncated: String = if first.chars().count() > 80 {
+                    let mut s: String = first.chars().take(79).collect();
+                    s.push('…');
+                    s
+                } else {
+                    first.to_string()
+                };
+                writeln!(
+                    out,
+                    "{} {}  {}{}",
+                    paint(
+                        style.color,
+                        Paint::Dim,
+                        &e.date.strftime("%Y-%m-%d").to_string()
+                    ),
+                    time_cell(e, style.color),
+                    star_cell(e, style.color),
+                    highlight_inline(&truncated, style.color, None)
+                )
+                .map_err(write_err)?;
+            }
         }
         OutputFormat::Human => {
+            let mut last_date: Option<Date> = None;
             for e in entries {
-                let date_str = e.date.strftime("%Y-%m-%d").to_string();
-                let time_str = e.time.as_deref().unwrap_or("--:--");
-                let star = if e.starred { "★ " } else { "" };
-                let write_err = |e: std::io::Error| SbError::Filesystem {
-                    message: "failed to write entry".into(),
-                    path: "<stdout>".into(),
-                    source: Some(e),
-                };
-                if short {
-                    let first = e.body.lines().next().unwrap_or("");
-                    let truncated: String = if first.chars().count() > 80 {
-                        let mut s: String = first.chars().take(79).collect();
-                        s.push('…');
-                        s
-                    } else {
-                        first.to_string()
-                    };
-                    writeln!(out, "{} {}  {}{}", date_str, time_str, star, truncated)
-                        .map_err(write_err)?;
-                } else {
-                    writeln!(out, "{} {}  {}", date_str, time_str, star).map_err(write_err)?;
-                    for line in e.body.lines() {
-                        writeln!(out, "    {}", line).map_err(write_err)?;
+                if last_date != Some(e.date) {
+                    if last_date.is_some() {
+                        writeln!(out).map_err(write_err)?;
                     }
-                    writeln!(out).map_err(write_err)?;
+                    let header = e.date.strftime("%A %Y-%m-%d").to_string();
+                    writeln!(out, "{}", paint(style.color, Paint::Header, &header))
+                        .map_err(write_err)?;
+                    last_date = Some(e.date);
                 }
+                for line in render_entry_lines(e, style) {
+                    writeln!(out, "{}", line).map_err(write_err)?;
+                }
+                writeln!(out).map_err(write_err)?;
             }
         }
     }
     Ok(())
+}
+
+/// The lines of one entry: `  HH:MM  ★ headline`, a dim attribute line, the
+/// wrapped body, and a dim signature line, all hung under a 9-column gutter.
+fn render_entry_lines(e: &JournalEntry, style: RenderStyle) -> Vec<String> {
+    let (text, signature) = split_signature(&e.body);
+    let mut lines = text.lines();
+    let headline = lines.next().unwrap_or("");
+    let pad = " ".repeat(BODY_INDENT);
+    let wrap_at = style.width.map(|w| w.saturating_sub(BODY_INDENT).max(20));
+    let mut out = Vec::new();
+
+    let mut in_code = headline.trim_start().starts_with("```");
+    let star_width = if e.starred { 2 } else { 0 };
+    let head_width = wrap_at.map(|w| w.saturating_sub(star_width).max(20));
+    let mut head = wrap_line(headline, head_width).into_iter();
+    let first = head.next().unwrap_or_default();
+    let first = if in_code {
+        paint(style.color, Paint::Dim, &first)
+    } else {
+        highlight_inline(
+            &checkbox(&first, style.color),
+            style.color,
+            Some(Paint::Bold),
+        )
+    };
+    out.push(format!(
+        "  {}  {}{}",
+        time_cell(e, style.color),
+        star_cell(e, style.color),
+        first
+    ));
+    for l in head {
+        out.push(format!(
+            "{pad}{}",
+            highlight_inline(&l, style.color, Some(Paint::Bold))
+        ));
+    }
+
+    let extra: Vec<String> = e
+        .attrs
+        .iter()
+        .filter(|(k, _)| k.as_str() != "time" && k.as_str() != "starred")
+        .map(|(k, v)| format!("{k}: {v}"))
+        .collect();
+    if !extra.is_empty() {
+        out.push(format!(
+            "{pad}{}",
+            paint(style.color, Paint::Dim, &extra.join(" · "))
+        ));
+    }
+
+    for line in lines {
+        if line.trim_start().starts_with("```") {
+            in_code = !in_code;
+            out.push(format!("{pad}{}", paint(style.color, Paint::Dim, line)));
+            continue;
+        }
+        if in_code {
+            out.push(format!("{pad}{}", paint(style.color, Paint::Code, line)));
+            continue;
+        }
+        if line.trim().is_empty() {
+            out.push(String::new());
+            continue;
+        }
+        for l in wrap_line(line, wrap_at) {
+            out.push(format!(
+                "{pad}{}",
+                highlight_inline(&checkbox(&l, style.color), style.color, None)
+            ));
+        }
+    }
+    if let Some(sig) = signature {
+        out.push(format!(
+            "{pad}{}",
+            paint(style.color, Paint::Dim, &format!("-- {sig}"))
+        ));
+    }
+    out
+}
+
+/// Split a trailing `-- @name [@name…]` signature (what `--sign` writes) off
+/// the body. Returns the remaining text and the signers.
+fn split_signature(body: &str) -> (String, Option<String>) {
+    let trimmed = body.trim_end();
+    let (head, last) = match trimmed.rfind('\n') {
+        Some(i) => (&trimmed[..i + 1], &trimmed[i + 1..]),
+        None => ("", trimmed),
+    };
+    let (before, sig) = match last.rfind("-- @") {
+        Some(i) if i == 0 || last[..i].ends_with(' ') => (&last[..i], &last[i + 3..]),
+        _ => return (body.to_string(), None),
+    };
+    if !sig
+        .split_whitespace()
+        .all(|w| w.starts_with('@') && w.len() > 1)
+    {
+        return (body.to_string(), None);
+    }
+    let text = format!("{head}{}", before.trim_end());
+    (text.trim_end().to_string(), Some(sig.trim().to_string()))
+}
+
+/// Greedy word wrap that keeps a line's leading indent, and hangs list items
+/// (`- `, `* `, `1. `) so their continuation lines align with the item text.
+fn wrap_line(line: &str, width: Option<usize>) -> Vec<String> {
+    let Some(width) = width else {
+        return vec![line.to_string()];
+    };
+    if console::measure_text_width(line) <= width {
+        return vec![line.to_string()];
+    }
+    let indent_len = line.len() - line.trim_start().len();
+    let indent = &line[..indent_len];
+    let rest = &line[indent_len..];
+    let marker_len = list_marker_len(rest);
+    let hang = format!("{indent}{}", " ".repeat(marker_len));
+
+    let mut out = Vec::new();
+    let mut cur = indent.to_string();
+    let mut cur_has_word = false;
+    for word in rest.split(' ').filter(|w| !w.is_empty()) {
+        let needed = if cur_has_word { 1 } else { 0 } + console::measure_text_width(word);
+        if cur_has_word && console::measure_text_width(&cur) + needed > width {
+            out.push(std::mem::replace(&mut cur, hang.clone()));
+            cur_has_word = false;
+        }
+        if cur_has_word {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+        cur_has_word = true;
+    }
+    if cur_has_word {
+        out.push(cur);
+    }
+    out
+}
+
+fn list_marker_len(s: &str) -> usize {
+    if s.starts_with("- ") || s.starts_with("* ") || s.starts_with("+ ") {
+        return 2;
+    }
+    let digits = s.chars().take_while(|c| c.is_ascii_digit()).count();
+    if digits > 0 && s[digits..].starts_with(". ") {
+        return digits + 2;
+    }
+    0
+}
+
+#[derive(Clone, Copy)]
+enum Paint {
+    Header,
+    Bold,
+    Dim,
+    Time,
+    Star,
+    Link,
+    Tag,
+    Code,
+    Open,
+    Done,
+}
+
+fn paint(color: bool, p: Paint, s: &str) -> String {
+    if !color || s.is_empty() {
+        return s.to_string();
+    }
+    let st = console::Style::new().force_styling(true);
+    let st = match p {
+        Paint::Header => st.bold().underlined(),
+        Paint::Bold => st.bold(),
+        Paint::Dim => st.dim(),
+        Paint::Time => st.cyan(),
+        Paint::Star => st.yellow(),
+        Paint::Link => st.blue(),
+        Paint::Tag => st.magenta(),
+        Paint::Code => st.yellow(),
+        Paint::Open => st.yellow().bold(),
+        Paint::Done => st.green(),
+    };
+    st.apply_to(s).to_string()
+}
+
+fn time_cell(e: &JournalEntry, color: bool) -> String {
+    match e.time.as_deref() {
+        Some(t) => paint(color, Paint::Time, t),
+        None => paint(color, Paint::Dim, "--:--"),
+    }
+}
+
+fn star_cell(e: &JournalEntry, color: bool) -> String {
+    if e.starred {
+        format!("{} ", paint(color, Paint::Star, "★"))
+    } else {
+        String::new()
+    }
+}
+
+/// Color a leading task checkbox: open `[ ]` stands out, done `[x]` recedes.
+fn checkbox(line: &str, color: bool) -> String {
+    let indent_len = line.len() - line.trim_start().len();
+    let (indent, rest) = line.split_at(indent_len);
+    let rest_after_marker = rest
+        .strip_prefix("- ")
+        .or_else(|| rest.strip_prefix("* "))
+        .map(|r| (&rest[..2], r))
+        .unwrap_or(("", rest));
+    let (marker, body) = rest_after_marker;
+    for (box_, p) in [
+        ("[ ] ", Paint::Open),
+        ("[x] ", Paint::Done),
+        ("[X] ", Paint::Done),
+    ] {
+        if let Some(after) = body.strip_prefix(box_) {
+            return format!(
+                "{indent}{marker}{}{after}",
+                paint(color, p, box_.trim_end()) + " "
+            );
+        }
+    }
+    line.to_string()
+}
+
+/// Color `[[wikilinks]]`, `#tags` and `` `code` `` within one line. Unclosed
+/// spans (a link split by wrapping) are left plain.
+fn highlight_inline(line: &str, color: bool, base: Option<Paint>) -> String {
+    if !color {
+        return line.to_string();
+    }
+    // Plain stretches are painted with `base` one by one, so a styled span's
+    // reset code never cancels the base style (bold headline) after it.
+    let mut out = String::with_capacity(line.len() + 16);
+    let mut plain = String::new();
+    let mut at_word_start = true;
+    let flush = |out: &mut String, plain: &mut String| {
+        if !plain.is_empty() {
+            match base {
+                Some(b) => out.push_str(&paint(true, b, plain)),
+                None => out.push_str(plain),
+            }
+            plain.clear();
+        }
+    };
+    let mut rest = line;
+    while !rest.is_empty() {
+        if let Some(after) = rest.strip_prefix("[[") {
+            if let Some(end) = after.find("]]") {
+                flush(&mut out, &mut plain);
+                out.push_str(&paint(true, Paint::Link, &rest[..end + 4]));
+                rest = &after[end + 2..];
+                at_word_start = false;
+                continue;
+            }
+        }
+        if let Some(after) = rest.strip_prefix('`') {
+            if let Some(end) = after.find('`') {
+                flush(&mut out, &mut plain);
+                out.push_str(&paint(true, Paint::Code, &rest[..end + 2]));
+                rest = &after[end + 1..];
+                at_word_start = false;
+                continue;
+            }
+        }
+        if rest.starts_with('#') && at_word_start {
+            let len = 1 + rest[1..]
+                .chars()
+                .take_while(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '/'))
+                .map(char::len_utf8)
+                .sum::<usize>();
+            if len > 1 {
+                flush(&mut out, &mut plain);
+                out.push_str(&paint(true, Paint::Tag, &rest[..len]));
+                rest = &rest[len..];
+                at_word_start = false;
+                continue;
+            }
+        }
+        let ch = rest.chars().next().unwrap();
+        plain.push(ch);
+        at_word_start = ch == ' ' || ch == '(';
+        rest = &rest[ch.len_utf8()..];
+    }
+    flush(&mut out, &mut plain);
+    out
 }
 
 #[cfg(test)]
@@ -1307,7 +1729,7 @@ mod tests {
     fn append_entry_to_empty_file_has_no_leading_newline() {
         let tmp = tempfile::tempdir().unwrap();
         let p = write_test_file(tmp.path(), "day.md", "");
-        append_entry(&p, "* [time:: 09:00] hello").unwrap();
+        append_entry(&p, "* [time:: 09:00] hello", false).unwrap();
         let got = std::fs::read_to_string(&p).unwrap();
         assert_eq!(got, "* [time:: 09:00] hello\n");
     }
@@ -1316,7 +1738,7 @@ mod tests {
     fn append_entry_to_file_without_trailing_newline_prepends_one() {
         let tmp = tempfile::tempdir().unwrap();
         let p = write_test_file(tmp.path(), "day.md", "# Header");
-        append_entry(&p, "* [time:: 09:00] hello").unwrap();
+        append_entry(&p, "* [time:: 09:00] hello", false).unwrap();
         let got = std::fs::read_to_string(&p).unwrap();
         assert_eq!(got, "# Header\n* [time:: 09:00] hello\n");
     }
@@ -1325,7 +1747,7 @@ mod tests {
     fn append_entry_to_file_with_trailing_newline_no_extra_prefix() {
         let tmp = tempfile::tempdir().unwrap();
         let p = write_test_file(tmp.path(), "day.md", "# Header\n");
-        append_entry(&p, "* [time:: 09:00] hello").unwrap();
+        append_entry(&p, "* [time:: 09:00] hello", false).unwrap();
         let got = std::fs::read_to_string(&p).unwrap();
         assert_eq!(got, "# Header\n* [time:: 09:00] hello\n");
     }
@@ -1335,7 +1757,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let p = write_test_file(tmp.path(), "day.md", "* [time:: 08:00] first\n");
         let multi = format_entry(Some("09:00"), false, '*', "line one\nline two", false, None);
-        append_entry(&p, &multi).unwrap();
+        append_entry(&p, &multi, false).unwrap();
         let got = std::fs::read_to_string(&p).unwrap();
         assert_eq!(
             got,
@@ -1372,9 +1794,15 @@ dateFormat = "%Y-%m-%d"
         let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
         let config = minimal_config(tmp.path());
         let page_path = tmp.path().join("Journal").join("2026-05-18.md");
-        let created = ensure_day_file(&page_path, tmp.path(), &config, None)
-            .await
-            .unwrap();
+        let created = ensure_day_file(
+            &page_path,
+            tmp.path(),
+            &config,
+            None,
+            &Date::constant(2026, 5, 18),
+        )
+        .await
+        .unwrap();
         assert!(created);
         assert!(page_path.exists());
         assert_eq!(std::fs::read_to_string(&page_path).unwrap(), "");
@@ -1391,9 +1819,15 @@ dateFormat = "%Y-%m-%d"
         std::fs::create_dir_all(&dir).unwrap();
         let page_path = dir.join("2026-05-18.md");
         std::fs::write(&page_path, "existing content").unwrap();
-        let created = ensure_day_file(&page_path, tmp.path(), &config, None)
-            .await
-            .unwrap();
+        let created = ensure_day_file(
+            &page_path,
+            tmp.path(),
+            &config,
+            None,
+            &Date::constant(2026, 5, 18),
+        )
+        .await
+        .unwrap();
         assert!(!created);
         // Untouched
         assert_eq!(
@@ -1427,8 +1861,215 @@ dateFormat = "%Y-%m-%d"
         let mut buf = Vec::new();
         render_entries(&entries, &OutputFormat::Human, false, &mut buf).unwrap();
         let s = String::from_utf8(buf).unwrap();
-        assert!(s.contains("2026-05-18 14:32"));
-        assert!(s.contains("    Finished the migration spike"));
+        assert_eq!(
+            s,
+            "Monday 2026-05-18\n  14:32  Finished the migration spike\n\n"
+        );
+    }
+
+    #[test]
+    fn render_entries_human_groups_by_date_and_splits_signature_and_attrs() {
+        let mut e = sample_entry(
+            "2026-05-18",
+            Some("09:00"),
+            "Swab done\n\nPara one.\n\nPara two. -- @barbossa",
+            false,
+        );
+        e.attrs.insert("time".into(), "09:00".into());
+        e.attrs.insert("result".into(), "done".into());
+        let entries = vec![
+            e,
+            sample_entry("2026-05-18", Some("08:00"), "same day", false),
+            sample_entry("2026-05-17", None, "Day summary: quiet", true),
+        ];
+        let mut buf = Vec::new();
+        render_entries(&entries, &OutputFormat::Human, false, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            s,
+            "Monday 2026-05-18\n\
+             \x20 09:00  Swab done\n\
+             \x20        result: done\n\
+             \n\
+             \x20        Para one.\n\
+             \n\
+             \x20        Para two.\n\
+             \x20        -- @barbossa\n\
+             \n\
+             \x20 08:00  same day\n\
+             \n\
+             \n\
+             Sunday 2026-05-17\n\
+             \x20 --:--  ★ Day summary: quiet\n\
+             \n"
+        );
+    }
+
+    #[test]
+    fn render_entries_styled_wraps_body_to_width_with_hanging_list_indent() {
+        let body = "Head\nalpha beta gamma delta epsilon\n- one two three four five six";
+        let entries = vec![sample_entry("2026-05-18", Some("09:00"), body, false)];
+        let mut buf = Vec::new();
+        let style = RenderStyle {
+            color: false,
+            width: Some(9 + 20),
+        };
+        render_entries_styled(&entries, &OutputFormat::Human, false, style, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        let body_lines: Vec<&str> = s.lines().skip(2).filter(|l| !l.is_empty()).collect();
+        assert_eq!(
+            body_lines,
+            vec![
+                "         alpha beta gamma",
+                "         delta epsilon",
+                "         - one two three four",
+                "           five six",
+            ]
+        );
+        assert!(s.lines().all(|l| console::measure_text_width(l) <= 29));
+    }
+
+    #[test]
+    fn split_signature_only_takes_a_trailing_mention_list() {
+        assert_eq!(
+            split_signature("text -- @a @b"),
+            ("text".to_string(), Some("@a @b".to_string()))
+        );
+        assert_eq!(
+            split_signature("line\n-- @cam"),
+            ("line".to_string(), Some("@cam".to_string()))
+        );
+        // Not a signature: prose after the mention, or no @ at all.
+        assert_eq!(split_signature("a -- @b said hi").1, None);
+        assert_eq!(split_signature("x -- y").1, None);
+    }
+
+    #[test]
+    fn json_entries_carry_inline_attributes() {
+        let mut e = sample_entry("2026-05-18", Some("09:00"), "x", false);
+        e.attrs.insert("result".into(), "blocked".into());
+        let mut buf = Vec::new();
+        render_entries(&[e], &OutputFormat::Json, false, &mut buf).unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&buf).unwrap();
+        assert_eq!(v[0]["attrs"]["result"], "blocked");
+    }
+
+    #[test]
+    fn parse_entries_keeps_paragraph_breaks_inside_one_entry() {
+        let content =
+            "* [time:: 09:00] Head\n\n  Para one.\n\n  Para two.\n\n* [time:: 10:00] Next\n";
+        let d = Date::constant(2026, 5, 18);
+        let entries = parse_entries(content, d, "J/2026-05-18");
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].body, "Head\n\nPara one.\n\nPara two.");
+        assert_eq!(entries[1].body, "Next");
+    }
+
+    #[test]
+    fn parse_entries_blank_line_then_unindented_text_ends_the_entry() {
+        let content = "* one\n\nA heading paragraph\n  not a continuation\n";
+        let entries = parse_entries(content, Date::constant(2026, 5, 18), "J");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].body, "one");
+    }
+
+    #[test]
+    fn format_entry_writes_no_whitespace_only_lines() {
+        let s = format_entry(Some("09:00"), false, '*', "Head\n\nBody", false, None);
+        assert_eq!(s, "* [time:: 09:00] Head\n\n  Body");
+    }
+
+    #[test]
+    fn append_entry_with_spacing_separates_entries_by_one_blank_line() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("d.md");
+        std::fs::write(&p, "").unwrap();
+        append_entry(&p, "* one", true).unwrap();
+        append_entry(&p, "* two", true).unwrap();
+        std::fs::write(&p, std::fs::read_to_string(&p).unwrap() + "\n").unwrap(); // already blank
+        append_entry(&p, "* three", true).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&p).unwrap(),
+            "* one\n\n* two\n\n* three\n"
+        );
+    }
+
+    #[test]
+    fn append_entry_spacing_counts_crlf_and_whitespace_blank_lines() {
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("d.md");
+        for (start, want) in [
+            ("x\r\n\r\n", "x\r\n\r\n* n\n"),
+            ("x\n  \n", "x\n  \n* n\n"),
+            ("x\r\n", "x\r\n\n* n\n"),
+            ("x", "x\n\n* n\n"),
+        ] {
+            std::fs::write(&p, start).unwrap();
+            append_entry(&p, "* n", true).unwrap();
+            assert_eq!(
+                std::fs::read_to_string(&p).unwrap(),
+                want,
+                "start={start:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn starred_headline_respects_wrap_width() {
+        let head = "word ".repeat(12);
+        let entries = vec![sample_entry("2026-05-18", Some("09:00"), head.trim(), true)];
+        let mut buf = Vec::new();
+        let style = RenderStyle {
+            color: false,
+            width: Some(40),
+        };
+        render_entries_styled(&entries, &OutputFormat::Human, false, style, &mut buf).unwrap();
+        let s = String::from_utf8(buf).unwrap();
+        assert!(
+            s.lines().all(|l| console::measure_text_width(l) <= 40),
+            "{s}"
+        );
+    }
+
+    #[tokio::test]
+    async fn daily_plain_template_leaves_dollar_braces_alone() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
+        let mut config = minimal_config(tmp.path());
+        config.runtime_available.value = true; // must not be consulted for a plain file
+        let raw = "echo ${HOME} on {{date}}\n";
+        let out = render_daily_template(raw, &Date::constant(2026, 11, 17), &config, None).await;
+        assert_eq!(out, "echo ${HOME} on 2026-11-17\n");
+    }
+
+    #[test]
+    fn fill_date_placeholders_uses_the_notes_date_and_format() {
+        let d = Date::constant(2026, 11, 17);
+        assert_eq!(
+            fill_date_placeholders("# Log {{date}} ({{weekday}})", &d, "%d.%m.%Y"),
+            "# Log 17.11.2026 (Tuesday)"
+        );
+    }
+
+    #[tokio::test]
+    async fn daily_page_template_drops_its_own_frontmatter_and_fills_the_date() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
+        let config = minimal_config(tmp.path());
+        let raw =
+            "---\ntags: meta/template/page\nfrontmatter: |\n  tags: log\n---\n# Log {{date}}\n";
+        let out = render_daily_template(raw, &Date::constant(2026, 11, 17), &config, None).await;
+        assert_eq!(out, "---\ntags: log\n---\n\n# Log 2026-11-17\n");
+    }
+
+    #[tokio::test]
+    async fn daily_plain_template_keeps_its_frontmatter() {
+        let tmp = tempfile::tempdir().unwrap();
+        let _env = crate::test_util::SbSpaceGuard::set(tmp.path());
+        let config = minimal_config(tmp.path());
+        let raw = "---\ntags: journal\n---\n# {{date}}\n";
+        let out = render_daily_template(raw, &Date::constant(2026, 11, 17), &config, None).await;
+        assert_eq!(out, "---\ntags: journal\n---\n# 2026-11-17\n");
     }
 
     #[test]

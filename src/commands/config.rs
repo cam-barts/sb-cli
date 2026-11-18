@@ -194,6 +194,11 @@ fn print_human(config: &ResolvedConfig, reveal: bool) {
         config.daily_task_tag_mode.value,
         source_annotation(&config.daily_task_tag_mode.source)
     );
+    println!(
+        "entrySpacing = {}  {}",
+        config.daily_entry_spacing.value,
+        source_annotation(&config.daily_entry_spacing.source)
+    );
     println!();
 
     // [template]
@@ -284,6 +289,7 @@ fn print_json(config: &ResolvedConfig, reveal: bool) {
             "dateFormat": json_entry(&config.daily_date_format),
             "taskTag": json_entry(&config.daily_task_tag),
             "taskTagMode": json_entry(&config.daily_task_tag_mode),
+            "entrySpacing": json_entry(&config.daily_entry_spacing),
         },
         "template": {
             "dir": json_optional_string_entry(&config.template_dir, false, reveal),

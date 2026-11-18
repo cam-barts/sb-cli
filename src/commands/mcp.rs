@@ -320,7 +320,7 @@ mod imp {
             &date,
         );
         let page_path = validate_page_path(&content_dir, &page_name)?;
-        ensure_day_file(&page_path, &content_dir, &config, None).await?;
+        ensure_day_file(&page_path, &content_dir, &config, None, &date).await?;
 
         let time = jiff::Zoned::now()
             .strftime(&config.daily_time_format.value)
@@ -332,7 +332,7 @@ mod imp {
             .next()
             .unwrap_or('*');
         let entry_md = format_entry(Some(&time), false, bullet, text, false, None);
-        append_entry(&page_path, &entry_md)?;
+        append_entry(&page_path, &entry_md, config.daily_entry_spacing.value)?;
         Ok(format!("appended to {}", page_name))
     }
 

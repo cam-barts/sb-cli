@@ -163,7 +163,26 @@ sb daily --on 2026-05-15 --format json | jq .
 ```
 
 Want to drop the `daily` suffix? Add `alias jrnl='sb daily'` to your shell rc;
-all flags above work unchanged.
+all flags above work unchanged. `alias jrnl='sb daily --sign @you'` credits
+every entry to you, which helps when a page is shared with others or with an agent.
+
+Read mode on a terminal groups entries under a date header, wraps them to the
+terminal width, splits off the `-- @name` signature and shows any other inline
+attributes (`[result:: done]`) on a dim line under the entry. Piped or
+`--no-color` output keeps the same layout without color or wrapping;
+`--format json` includes the attributes as `attrs`.
+
+A paragraph break inside an entry is a blank line followed by more indented
+text, so multi-paragraph entries read back whole. Set `daily.entrySpacing = true`
+to put a blank line between entries in the note itself.
+
+`daily.template` names a page to start each new note from. `{{date}}` (in
+`daily.dateFormat`) and `{{weekday}}` are filled with the note's own date, so
+`sb daily --yesterday` titles yesterday's note correctly. A SilverBullet page
+template (tagged `meta/template/page`) is instantiated the way SilverBullet
+does it: its `frontmatter:` payload becomes the note's frontmatter, so the
+template tag never lands on the note, and `${...}` is rendered when the Runtime
+API is available.
 
 ### Templates
 
@@ -400,6 +419,7 @@ timeFormat = "%H:%M"       # Time format used for [time:: ...] attributes (defau
 bulletStyle = "*"          # Bullet character for journal entries: "*" or "-" (default: "*")
 taskTag = "task"           # Tag applied to --task entries (default: "task")
 taskTagMode = "auto"       # When to tag tasks: "auto" | "always" | "never" (default: "auto")
+entrySpacing = false       # Blank line between appended entries (default: false)
 
 [template]
 dir = "Library/Personal/Templates"  # Folder page templates live in (optional)

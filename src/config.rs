@@ -50,6 +50,8 @@ pub struct DailyConfigFile {
     pub task_tag: Option<String>,
     #[serde(rename = "taskTagMode")]
     pub task_tag_mode: Option<String>,
+    #[serde(rename = "entrySpacing")]
+    pub entry_spacing: Option<bool>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -135,6 +137,8 @@ pub struct ResolvedConfig {
     pub daily_bullet_style: ResolvedValue<String>,
     pub daily_task_tag: ResolvedValue<String>,
     pub daily_task_tag_mode: ResolvedValue<String>,
+    /// Separate appended entries with a blank line (a loose Markdown list).
+    pub daily_entry_spacing: ResolvedValue<bool>,
     pub shell_enabled: ResolvedValue<bool>,
     pub auth_keychain: ResolvedValue<bool>,
     pub runtime_available: ResolvedValue<bool>,
@@ -334,6 +338,12 @@ impl ResolvedConfig {
             });
         }
 
+        let daily_entry_spacing = Self::resolve_bool(
+            "SB_DAILY_ENTRY_SPACING",
+            config_file.daily.entry_spacing,
+            user_config.daily.entry_spacing,
+            false,
+        )?;
         let shell_enabled = Self::resolve_bool(
             "SB_SHELL_ENABLED",
             config_file.shell.enabled,
@@ -388,6 +398,7 @@ impl ResolvedConfig {
             daily_bullet_style,
             daily_task_tag,
             daily_task_tag_mode,
+            daily_entry_spacing,
             shell_enabled,
             auth_keychain,
             runtime_available,
