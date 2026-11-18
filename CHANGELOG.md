@@ -1,3 +1,9 @@
+## v1.12.0 (2026-11-18)
+
+### Feat
+
+- **daily**: template date placeholders, whole multi-paragraph entries, styled read output (#29)
+
 ## v1.11.3 (2026-11-18)
 
 ### Fix
