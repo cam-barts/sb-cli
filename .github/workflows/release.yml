@@ -30,7 +30,12 @@ jobs:
           - x86_64-pc-windows-msvc
         include:
           - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
+            # Not ubuntu-latest: the 26.04 image is built for x86-64-v3 (its
+            # GCC defaults to -march=x86-64-v3 and its own libc won't run on
+            # older CPUs), which also makes the baseline-CPU smoke test below
+            # meaningless there. If 24.04 is retired, the smoke test will fail
+            # loudly; move to a baseline image or a container then.
+            os: ubuntu-24.04
             artifact: sb
             archive: tar.gz
           - target: aarch64-unknown-linux-gnu
@@ -57,8 +62,9 @@ jobs:
       FEATURES: ${{ matrix.variant == 'ai' && '--features ai' || '' }}
       # Pin C dependencies (bundled SQLite, aws-lc) to baseline x86-64, the same
       # baseline rustc targets. The Ubuntu 26.04 runner's GCC emits AVX2/BMI2
-      # code by default, which crashed every release from v1.10.0 to v1.12.0 with
-      # SIGILL on pre-Haswell CPUs. Only x86_64 Linux builds read this env var.
+      # code by default, which crashed every release from v1.9.2 to v1.12.0 with
+      # SIGILL on pre-Haswell CPUs. Backstop for the ubuntu-24.04 pin above;
+      # only x86_64 Linux builds read this env var.
       CFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
       CXXFLAGS_x86_64_unknown_linux_gnu: -march=x86-64 -mtune=generic
 
@@ -123,6 +129,9 @@ jobs:
   release:
     name: Create Release
     needs: build
+    # A workflow_dispatch from a branch is a build-and-smoke-test dry run; only
+    # a version tag publishes.
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
