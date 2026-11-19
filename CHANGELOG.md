@@ -1,3 +1,9 @@
+## v1.12.1 (2026-11-19)
+
+### Fix
+
+- **release**: build C deps for baseline x86-64 and smoke-test on Nehalem (#30)
+
 ## v1.12.0 (2026-11-18)
 
 ### Feat
